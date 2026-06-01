@@ -34,11 +34,15 @@ export function countryRuleTag(slug: string): string {
 }
 
 export function createCountryRule(slug: string): XrayRoutingRule {
+  return createExitRule(slug, countryOutboundTag(slug));
+}
+
+export function createExitRule(slug: string, outboundTag: string): XrayRoutingRule {
   return {
     type: "field",
     ruleTag: countryRuleTag(slug),
     user: [`regexp:.*-${slug}$`],
-    outboundTag: countryOutboundTag(slug),
+    outboundTag,
   };
 }
 
@@ -47,21 +51,33 @@ export function upsertCountry(
   slug: string,
   outbound: XrayOutbound,
 ): XrayTemplate {
+  return upsertExit(template, slug, outbound);
+}
+
+export function upsertExit(
+  template: XrayTemplate,
+  slug: string,
+  outbound: XrayOutbound,
+): XrayTemplate {
   const next = clone(template);
-  next.outbounds = next.outbounds.filter((item) => item.tag !== countryOutboundTag(slug));
+  next.outbounds = next.outbounds.filter((item) => item.tag !== outbound.tag);
   next.outbounds.push(outbound);
 
   next.routing.rules = next.routing.rules.filter(
     (rule) => rule.ruleTag !== countryRuleTag(slug),
   );
   // Country rules must run before broader existing rules.
-  next.routing.rules.unshift(createCountryRule(slug));
+  next.routing.rules.unshift(createExitRule(slug, outbound.tag));
   return next;
 }
 
 export function removeCountry(template: XrayTemplate, slug: string): XrayTemplate {
+  return removeExit(template, slug, countryOutboundTag(slug));
+}
+
+export function removeExit(template: XrayTemplate, slug: string, outboundTag: string): XrayTemplate {
   const next = clone(template);
-  next.outbounds = next.outbounds.filter((item) => item.tag !== countryOutboundTag(slug));
+  next.outbounds = next.outbounds.filter((item) => item.tag !== outboundTag);
   next.routing.rules = next.routing.rules.filter(
     (rule) => rule.ruleTag !== countryRuleTag(slug),
   );
@@ -86,4 +102,3 @@ export function asJsonObject(value: unknown): JsonObject {
   }
   return value as JsonObject;
 }
-

@@ -58,5 +58,5 @@ export function countryFlagFromSlug(slug: string): string {
 }
 
 export function managedClientEmail(subscriptionSlug: string, countrySlug: string): string {
-  return `${countryFlagFromSlug(countrySlug)} ${subscriptionSlug}-${countrySlug}`;
+  return `${countryFlagFromSlug(countrySlug)}-${subscriptionSlug}-${countrySlug}`;
 }

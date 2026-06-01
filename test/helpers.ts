@@ -1,7 +1,8 @@
-import type { ManagedClient, XrayOutbound, XrayTemplate, XuiApi, XuiClient } from "../src/types.ts";
+import type { ManagedClient, OutboundTestResult, XrayOutbound, XrayTemplate, XuiApi, XuiClient } from "../src/types.ts";
 
 export const REALITY_URI =
   "vless://74b0b096-5d02-11f1-a319-52cf4084cd34@usa12.vpnjantit.com:443?type=tcp&security=reality&sni=cloudflare.com&fp=chrome&pbk=g03nwLrMnwsZs7posvVRTelixQToNkNV2-QQCZa1Mjo&sid=ea81553e93920d38&flow=xtls-rprx-vision#usa";
+export const NORD_PRIVATE_KEY = Buffer.alloc(32, 1).toString("base64");
 
 export function baseTemplate(): XrayTemplate {
   return {
@@ -26,6 +27,7 @@ export class MockXui implements XuiApi {
   deleted: string[] = [];
   renamed: Array<{ from: string; to: string }> = [];
   tested: XrayOutbound[] = [];
+  failTestHostnames = new Set<string>();
   failUpdateOnCall?: number;
   failCreateEmail?: string;
   private updateCalls = 0;
@@ -51,8 +53,14 @@ export class MockXui implements XuiApi {
     this.template = structuredClone(template);
   }
 
-  async testOutbound(outbound: XrayOutbound): Promise<void> {
+  async testOutbound(outbound: XrayOutbound): Promise<OutboundTestResult> {
     this.tested.push(structuredClone(outbound));
+    const settings = outbound.settings as { peers?: Array<{ endpoint?: string }> } | undefined;
+    const endpoint = settings?.peers?.[0]?.endpoint ?? "";
+    if ([...this.failTestHostnames].some((hostname) => endpoint.startsWith(hostname))) {
+      throw new Error("outbound test failed");
+    }
+    return { success: true };
   }
 
   async listClients(): Promise<XuiClient[]> {

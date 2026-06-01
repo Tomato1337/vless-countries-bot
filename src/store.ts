@@ -1,21 +1,42 @@
 import { Database } from "bun:sqlite";
 import { chmodSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import type { Country, ManagedClient, XrayOutbound, XrayTemplate } from "./types.ts";
+import type {
+  ExitProvider,
+  JsonObject,
+  ManagedClient,
+  ManualVlessSource,
+  NordVpnSource,
+  VpnExit,
+  WizardSession,
+  XrayOutbound,
+  XrayTemplate,
+} from "./types.ts";
 
-interface CountryRow {
+interface ExitRow {
+  id: number;
   slug: string;
-  uri: string;
+  provider: ExitProvider;
+  source_json: string;
   outbound_json: string;
   created_at: string;
   updated_at: string;
 }
 
 interface ManagedClientRow {
-  country_slug: string;
+  exit_slug: string;
   email: string;
   sub_id: string;
   uuid: string;
+}
+
+interface WizardSessionRow {
+  chat_id: number;
+  user_id: number;
+  flow: string;
+  step: string;
+  payload_json: string;
+  expires_at: string;
 }
 
 export class Store {
@@ -37,18 +58,21 @@ export class Store {
   }
 
   private migrate(): void {
+    const version = this.db.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version ?? 0;
     this.db.exec(`
       PRAGMA foreign_keys = ON;
-      CREATE TABLE IF NOT EXISTS countries (
-        slug TEXT PRIMARY KEY,
-        uri TEXT NOT NULL,
+      CREATE TABLE IF NOT EXISTS exits (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        slug TEXT NOT NULL UNIQUE,
+        provider TEXT NOT NULL,
+        source_json TEXT NOT NULL,
         outbound_json TEXT NOT NULL,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
-      CREATE TABLE IF NOT EXISTS managed_clients (
+      CREATE TABLE IF NOT EXISTS exit_clients (
         email TEXT PRIMARY KEY,
-        country_slug TEXT NOT NULL REFERENCES countries(slug) ON DELETE CASCADE,
+        exit_slug TEXT NOT NULL REFERENCES exits(slug) ON DELETE CASCADE,
         sub_id TEXT NOT NULL,
         uuid TEXT NOT NULL
       );
@@ -71,67 +95,155 @@ export class Store {
         details TEXT NOT NULL,
         created_at TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS wizard_sessions (
+        chat_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        flow TEXT NOT NULL,
+        step TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        PRIMARY KEY (chat_id, user_id)
+      );
     `);
+    if (version < 2) {
+      this.copyLegacyData();
+      this.db.exec("PRAGMA user_version = 2;");
+    }
   }
 
-  getCountry(slug: string): Country | undefined {
-    const row = this.db.query<CountryRow, [string]>(
-      "SELECT * FROM countries WHERE slug = ?",
+  private copyLegacyData(): void {
+    if (!this.tableExists("countries")) {
+      return;
+    }
+    const legacyCountries = this.db.query<{
+      slug: string;
+      uri: string;
+      outbound_json: string;
+      created_at: string;
+      updated_at: string;
+    }, []>("SELECT * FROM countries").all();
+    const insertExit = this.db.query(`
+      INSERT INTO exits (slug, provider, source_json, outbound_json, created_at, updated_at)
+      VALUES (?, 'manual-vless', ?, ?, ?, ?)
+      ON CONFLICT(slug) DO NOTHING
+    `);
+    const insertClient = this.db.query(`
+      INSERT INTO exit_clients (email, exit_slug, sub_id, uuid)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(email) DO NOTHING
+    `);
+    this.db.transaction(() => {
+      for (const country of legacyCountries) {
+        insertExit.run(
+          country.slug,
+          JSON.stringify({ uri: country.uri }),
+          country.outbound_json,
+          country.created_at,
+          country.updated_at,
+        );
+      }
+      if (this.tableExists("managed_clients")) {
+        const clients = this.db.query<{
+          email: string;
+          country_slug: string;
+          sub_id: string;
+          uuid: string;
+        }, []>("SELECT * FROM managed_clients").all();
+        for (const client of clients) {
+          insertClient.run(client.email, client.country_slug, client.sub_id, client.uuid);
+        }
+      }
+    })();
+  }
+
+  private tableExists(name: string): boolean {
+    return Boolean(this.db.query<{ count: number }, [string]>(
+      "SELECT count(*) AS count FROM sqlite_master WHERE type = 'table' AND name = ?",
+    ).get(name)?.count);
+  }
+
+  getExit(slug: string): VpnExit | undefined {
+    const row = this.db.query<ExitRow, [string]>(
+      "SELECT * FROM exits WHERE slug = ?",
     ).get(slug);
-    return row ? countryFromRow(row) : undefined;
+    return row ? exitFromRow(row) : undefined;
   }
 
-  listCountries(): Country[] {
-    return this.db.query<CountryRow, []>(
-      "SELECT * FROM countries ORDER BY slug",
-    ).all().map(countryFromRow);
+  getExitById(id: number): VpnExit | undefined {
+    const row = this.db.query<ExitRow, [number]>(
+      "SELECT * FROM exits WHERE id = ?",
+    ).get(id);
+    return row ? exitFromRow(row) : undefined;
   }
 
-  upsertCountry(slug: string, uri: string, outbound: XrayOutbound): void {
+  listExits(provider?: ExitProvider): VpnExit[] {
+    const rows = provider
+      ? this.db.query<ExitRow, [ExitProvider]>(
+          "SELECT * FROM exits WHERE provider = ? ORDER BY slug",
+        ).all(provider)
+      : this.db.query<ExitRow, []>("SELECT * FROM exits ORDER BY slug").all();
+    return rows.map(exitFromRow);
+  }
+
+  upsertManualExit(slug: string, uri: string, outbound: XrayOutbound): void {
+    this.upsertExit(slug, "manual-vless", { uri }, outbound);
+  }
+
+  upsertNordVpnExit(slug: string, source: NordVpnSource, outbound: XrayOutbound): void {
+    this.upsertExit(slug, "nordvpn", source, redactOutbound(outbound));
+  }
+
+  private upsertExit(
+    slug: string,
+    provider: ExitProvider,
+    source: ManualVlessSource | NordVpnSource,
+    outbound: XrayOutbound,
+  ): void {
     const now = new Date().toISOString();
     this.db.query(`
-      INSERT INTO countries (slug, uri, outbound_json, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?)
+      INSERT INTO exits (slug, provider, source_json, outbound_json, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?)
       ON CONFLICT(slug) DO UPDATE SET
-        uri = excluded.uri,
+        provider = excluded.provider,
+        source_json = excluded.source_json,
         outbound_json = excluded.outbound_json,
         updated_at = excluded.updated_at
-    `).run(slug, uri, JSON.stringify(outbound), now, now);
+    `).run(slug, provider, JSON.stringify(source), JSON.stringify(outbound), now, now);
   }
 
-  deleteCountry(slug: string): void {
-    this.db.query("DELETE FROM countries WHERE slug = ?").run(slug);
+  deleteExit(slug: string): void {
+    this.db.query("DELETE FROM exits WHERE slug = ?").run(slug);
   }
 
   addManagedClient(client: ManagedClient): void {
     this.db.query(`
-      INSERT INTO managed_clients (country_slug, email, sub_id, uuid)
+      INSERT INTO exit_clients (exit_slug, email, sub_id, uuid)
       VALUES (?, ?, ?, ?)
-    `).run(client.countrySlug, client.email, client.subId, client.uuid);
+    `).run(client.exitSlug, client.email, client.subId, client.uuid);
   }
 
   deleteManagedClient(email: string): void {
-    this.db.query("DELETE FROM managed_clients WHERE email = ?").run(email);
+    this.db.query("DELETE FROM exit_clients WHERE email = ?").run(email);
   }
 
   renameManagedClient(currentEmail: string, nextEmail: string): void {
-    this.db.query("UPDATE managed_clients SET email = ? WHERE email = ?").run(nextEmail, currentEmail);
+    this.db.query("UPDATE exit_clients SET email = ? WHERE email = ?").run(nextEmail, currentEmail);
   }
 
-  listManagedClients(countrySlug?: string): ManagedClient[] {
-    const rows = countrySlug
+  listManagedClients(exitSlug?: string): ManagedClient[] {
+    const rows = exitSlug
       ? this.db.query<ManagedClientRow, [string]>(
-          "SELECT * FROM managed_clients WHERE country_slug = ? ORDER BY email",
-        ).all(countrySlug)
+          "SELECT * FROM exit_clients WHERE exit_slug = ? ORDER BY email",
+        ).all(exitSlug)
       : this.db.query<ManagedClientRow, []>(
-          "SELECT * FROM managed_clients ORDER BY email",
+          "SELECT * FROM exit_clients ORDER BY email",
         ).all();
     return rows.map(managedClientFromRow);
   }
 
   isManagedEmail(email: string): boolean {
     return Boolean(this.db.query<{ count: number }, [string]>(
-      "SELECT count(*) AS count FROM managed_clients WHERE email = ?",
+      "SELECT count(*) AS count FROM exit_clients WHERE email = ?",
     ).get(email)?.count);
   }
 
@@ -159,17 +271,54 @@ export class Store {
     ).all().map((row) => row.telegram_id);
   }
 
-  backupTemplate(reason: string, template: XrayTemplate): void {
+  backupTemplate(reason: string, template: XrayTemplate, nordVpnPrivateKey?: string): void {
     this.db.query(`
       INSERT INTO template_backups (reason, template_json, created_at)
       VALUES (?, ?, ?)
-    `).run(reason, JSON.stringify(template), new Date().toISOString());
+    `).run(reason, JSON.stringify(redactTemplate(template, nordVpnPrivateKey)), new Date().toISOString());
+  }
+
+  upsertWizardSession(session: WizardSession): void {
+    this.db.query(`
+      INSERT INTO wizard_sessions (chat_id, user_id, flow, step, payload_json, expires_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(chat_id, user_id) DO UPDATE SET
+        flow = excluded.flow,
+        step = excluded.step,
+        payload_json = excluded.payload_json,
+        expires_at = excluded.expires_at
+    `).run(
+      session.chatId,
+      session.userId,
+      session.flow,
+      session.step,
+      JSON.stringify(session.payload),
+      session.expiresAt,
+    );
+  }
+
+  getWizardSession(chatId: number, userId: number): WizardSession | undefined {
+    const row = this.db.query<WizardSessionRow, [number, number]>(
+      "SELECT * FROM wizard_sessions WHERE chat_id = ? AND user_id = ?",
+    ).get(chatId, userId);
+    if (!row) {
+      return undefined;
+    }
+    if (Date.parse(row.expires_at) <= Date.now()) {
+      this.deleteWizardSession(chatId, userId);
+      return undefined;
+    }
+    return wizardSessionFromRow(row);
+  }
+
+  deleteWizardSession(chatId: number, userId: number): void {
+    this.db.query("DELETE FROM wizard_sessions WHERE chat_id = ? AND user_id = ?").run(chatId, userId);
   }
 
   audit(
     actorId: number,
     action: string,
-    countrySlug: string | null,
+    exitSlug: string | null,
     success: boolean,
     details: string,
   ): void {
@@ -180,18 +329,69 @@ export class Store {
     `).run(
       actorId,
       action,
-      countrySlug,
+      exitSlug,
       success ? 1 : 0,
       details,
       new Date().toISOString(),
     );
   }
+
+  // Compatibility aliases for existing callers and migrations.
+  getCountry(slug: string): VpnExit | undefined {
+    return this.getExit(slug);
+  }
+
+  listCountries(): VpnExit[] {
+    return this.listExits();
+  }
+
+  upsertCountry(slug: string, uri: string, outbound: XrayOutbound): void {
+    this.upsertManualExit(slug, uri, outbound);
+  }
+
+  deleteCountry(slug: string): void {
+    this.deleteExit(slug);
+  }
 }
 
-function countryFromRow(row: CountryRow): Country {
+export function redactTemplate(template: XrayTemplate, nordVpnPrivateKey?: string): XrayTemplate {
+  const next = structuredClone(template);
+  for (const outbound of next.outbounds) {
+    if (outbound.protocol !== "wireguard") {
+      continue;
+    }
+    const settings = asObject(outbound.settings);
+    if (!settings || typeof settings.secretKey !== "string") {
+      continue;
+    }
+    if (outbound.tag.startsWith("countries-nord-exit-") || settings.secretKey === nordVpnPrivateKey) {
+      settings.secretKey = "<redacted>";
+    }
+  }
+  return next;
+}
+
+function redactOutbound(outbound: XrayOutbound): XrayOutbound {
+  const next = structuredClone(outbound);
+  const settings = asObject(next.settings);
+  if (settings && typeof settings.secretKey === "string") {
+    settings.secretKey = "<redacted>";
+  }
+  return next;
+}
+
+function asObject(value: unknown): JsonObject | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as JsonObject
+    : undefined;
+}
+
+function exitFromRow(row: ExitRow): VpnExit {
   return {
+    id: row.id,
     slug: row.slug,
-    uri: row.uri,
+    provider: row.provider,
+    source: JSON.parse(row.source_json) as ManualVlessSource | NordVpnSource,
     outbound: JSON.parse(row.outbound_json) as XrayOutbound,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -200,9 +400,20 @@ function countryFromRow(row: CountryRow): Country {
 
 function managedClientFromRow(row: ManagedClientRow): ManagedClient {
   return {
-    countrySlug: row.country_slug,
+    exitSlug: row.exit_slug,
     email: row.email,
     subId: row.sub_id,
     uuid: row.uuid,
+  };
+}
+
+function wizardSessionFromRow(row: WizardSessionRow): WizardSession {
+  return {
+    chatId: row.chat_id,
+    userId: row.user_id,
+    flow: row.flow,
+    step: row.step,
+    payload: JSON.parse(row.payload_json) as JsonObject,
+    expiresAt: row.expires_at,
   };
 }

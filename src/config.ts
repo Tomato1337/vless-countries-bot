@@ -7,6 +7,7 @@ export interface AppConfig {
   xuiInboundId: number;
   geOutboundTag: string;
   databasePath: string;
+  nordVpnPrivateKey?: string;
 }
 
 function required(env: Record<string, string | undefined>, key: string): string {
@@ -44,5 +45,6 @@ export function loadConfig(env: Record<string, string | undefined> = Bun.env): A
     xuiInboundId: positiveInteger(required(env, "XUI_INBOUND_ID"), "XUI_INBOUND_ID"),
     geOutboundTag: outboundTag(required(env, "GE_OUTBOUND_TAG")),
     databasePath: env.DATABASE_PATH?.trim() || "./data/bot.sqlite",
+    nordVpnPrivateKey: env.NORDVPN_PRIVATE_KEY?.trim() || undefined,
   };
 }

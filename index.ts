@@ -16,6 +16,7 @@ async function main(): Promise<void> {
   const service = new CountryService(store, xui, {
     geOutboundTag: config.geOutboundTag,
     inboundId: config.xuiInboundId,
+    nordVpnPrivateKey: config.nordVpnPrivateKey,
   });
 
   try {
@@ -23,6 +24,10 @@ async function main(): Promise<void> {
     if (process.argv.includes("--check")) {
       console.log("Compatibility check passed.");
       return;
+    }
+    const nordError = service.nordVpnAvailabilityError();
+    if (nordError) {
+      console.log(`NordVPN module disabled: ${nordError}`);
     }
     const bot = createBot(
       { token: config.telegramBotToken, ownerId: config.telegramOwnerId },

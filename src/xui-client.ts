@@ -1,5 +1,5 @@
 import { asJsonObject, asTemplate, assertGeOutbound } from "./template.ts";
-import type { JsonObject, ManagedClient, XrayOutbound, XrayTemplate, XuiApi, XuiClient } from "./types.ts";
+import type { JsonObject, ManagedClient, OutboundTestResult, XrayOutbound, XrayTemplate, XuiApi, XuiClient } from "./types.ts";
 
 interface HttpXuiClientConfig {
   baseUrl: string;
@@ -59,13 +59,32 @@ export class HttpXuiClient implements XuiApi {
     await this.postForm("/panel/xray/update", {
       xraySetting: JSON.stringify(template),
     });
+    await this.postJson("/panel/api/server/restartXrayService", {});
   }
 
-  async testOutbound(outbound: XrayOutbound, allOutbounds: XrayOutbound[]): Promise<void> {
-    await this.postForm("/panel/xray/testOutbound", {
+  async testOutbound(outbound: XrayOutbound, allOutbounds: XrayOutbound[]): Promise<OutboundTestResult> {
+    const value = parseMaybeJson(await this.postForm("/panel/xray/testOutbound", {
       outbound: JSON.stringify(outbound),
       allOutbounds: JSON.stringify(allOutbounds),
-    });
+    }));
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      // Legacy panels returned a scalar latency string on success.
+      return { success: true };
+    }
+    const result = value as JsonObject;
+    if (typeof result.success !== "boolean") {
+      throw new Error("3x-ui /panel/xray/testOutbound returned an unsupported response shape");
+    }
+    const parsed: OutboundTestResult = {
+      success: result.success,
+      ...(typeof result.delay === "number" ? { delay: result.delay } : {}),
+      ...(typeof result.error === "string" ? { error: result.error } : {}),
+      ...(typeof result.mode === "string" ? { mode: result.mode } : {}),
+    };
+    if (!parsed.success) {
+      throw new Error(parsed.error || "3x-ui outbound test failed");
+    }
+    return parsed;
   }
 
   async listClients(): Promise<XuiClient[]> {
@@ -89,78 +108,43 @@ export class HttpXuiClient implements XuiApi {
   }
 
   async createClient(client: ManagedClient, inboundId: number): Promise<void> {
-    if (this.clientApiMode === "legacy") {
-      await this.postJson("/panel/api/inbounds/addClient", {
-        id: inboundId,
-        settings: JSON.stringify({
-          clients: [
-            {
-              id: client.uuid,
-              flow: "",
-              email: client.email,
-              limitIp: 0,
-              totalGB: 0,
-              expiryTime: 0,
-              enable: true,
-              tgId: "",
-              subId: client.subId,
-              reset: 0,
-            },
-          ],
-        }),
-      });
-      return;
-    }
-    await this.postJson("/panel/api/clients/add", {
-      client: {
+    await this.updateInboundClients(inboundId, (clients) => {
+      if (clients.some((value) => clientEmail(value).toLowerCase() === client.email.toLowerCase())) {
+        throw new Error(`3x-ui client email already exists: ${client.email}`);
+      }
+      clients.push({
         id: client.uuid,
+        flow: "",
         email: client.email,
-        subId: client.subId,
-        enable: true,
+        limitIp: 0,
         totalGB: 0,
         expiryTime: 0,
-        limitIp: 0,
-      },
-      inboundIds: [inboundId],
+        enable: true,
+        tgId: "",
+        subId: client.subId,
+        reset: 0,
+      });
     });
   }
 
   async renameClient(client: ManagedClient, nextEmail: string, inboundId: number): Promise<void> {
-    if (this.clientApiMode === "legacy") {
-      await this.deleteClient(client);
-      try {
-        await this.createClient({ ...client, email: nextEmail }, inboundId);
-      } catch (error) {
-        try {
-          await this.createClient(client, inboundId);
-        } catch {
-          // Preserve the rename error. The later /sync can expose an incomplete restoration.
-        }
-        throw error;
+    await this.updateInboundClients(inboundId, (clients) => {
+      if (clients.some((value) => clientEmail(value).toLowerCase() === nextEmail.toLowerCase())) {
+        throw new Error(`3x-ui client email already exists: ${nextEmail}`);
       }
-      return;
-    }
-    await this.postJson(`/panel/api/clients/update/${encodeURIComponent(client.email)}`, {
-      id: client.uuid,
-      email: nextEmail,
-      subId: client.subId,
-      enable: true,
-      totalGB: 0,
-      expiryTime: 0,
-      limitIp: 0,
+      const current = requireInboundClient(clients, client.uuid);
+      current.email = nextEmail;
     });
   }
 
   async deleteClient(client: Pick<ManagedClient, "email" | "uuid">): Promise<void> {
-    if (this.clientApiMode === "legacy") {
-      const inboundId = this.requireInboundId();
-      await this.postJson(
-        `/panel/api/inbounds/${inboundId}/delClient/${encodeURIComponent(client.uuid)}`,
-        {},
-      );
-      return;
-    }
-    await this.postJson(`/panel/api/clients/del/${encodeURIComponent(client.email)}`, {});
+    await this.updateInboundClients(this.requireInboundId(), (clients) => {
+      const index = clients.findIndex((value) => clientId(value) === client.uuid);
+      if (index < 0) {
+        throw new Error(`3x-ui inbound client does not exist: ${client.email}`);
+      }
+      clients.splice(index, 1);
+    });
   }
 
   private async login(): Promise<void> {
@@ -326,6 +310,22 @@ export class HttpXuiClient implements XuiApi {
     });
   }
 
+  private async updateInboundClients(
+    inboundId: number,
+    mutate: (clients: JsonObject[]) => void,
+  ): Promise<void> {
+    const inbound = await this.getInbound(inboundId);
+    const settings = asJsonObject(parseMaybeJson(inbound.settings));
+    if (!Array.isArray(settings.clients)) {
+      throw new Error("3x-ui inbound settings are missing clients");
+    }
+    const clients = settings.clients.map(asJsonObject);
+    mutate(clients);
+    settings.clients = clients;
+    inbound.settings = JSON.stringify(settings);
+    await this.postJson(`/panel/api/inbounds/update/${inboundId}`, inbound);
+  }
+
   private requireInboundId(): number {
     if (!this.inboundId) {
       throw new Error("3x-ui compatibility check must run before client operations");
@@ -407,4 +407,20 @@ function describeShape(value: unknown): string {
     return `object with keys [${Object.keys(value as JsonObject).join(", ")}]`;
   }
   return typeof value;
+}
+
+function clientEmail(client: JsonObject): string {
+  return String(client.email ?? "");
+}
+
+function clientId(client: JsonObject): string {
+  return String(client.id ?? "");
+}
+
+function requireInboundClient(clients: JsonObject[], uuid: string): JsonObject {
+  const client = clients.find((value) => clientId(value) === uuid);
+  if (!client) {
+    throw new Error(`3x-ui inbound client does not exist: ${uuid}`);
+  }
+  return client;
 }

@@ -1,0 +1,20 @@
+services:
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: vless-countries-bot:local
+    env_file:
+      - .env
+    environment:
+      DATABASE_PATH: /app/data/bot.sqlite
+    volumes:
+      - ./data:/app/data
+    init: true
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "bun", "index.ts", "--check"]
+      interval: 1m
+      timeout: 20s
+      retries: 3
+      start_period: 15s
