@@ -97,10 +97,10 @@ NordVPN exit нельзя перезаписать ручным `/set`, и на�
 1. Бот получает актуальный Xray-template.
 2. Проверяет наличие Germany outbound.
 3. Собирает candidate outbound.
-4. Вызывает `/panel/xray/testOutbound`.
+4. Вызывает `/panel/api/xray/testOutbounds`.
 5. Сохраняет redacted backup template в SQLite.
 6. Обновляет Xray-template.
-7. Вызывает `/panel/api/server/restartXrayService`.
+7. Панель применяет Xray-template и перезапускает работающий Xray.
 8. Создаёт недостающие подписочные профили.
 
 При ошибке бот выполняет компенсирующий rollback. Backup остаётся в SQLite для

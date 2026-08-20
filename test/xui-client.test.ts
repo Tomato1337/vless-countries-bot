@@ -10,8 +10,8 @@ describe("HttpXuiClient", () => {
     let testedOutbound = "";
     let clients = [{ id: "existing", email: "ilya-phone", subId: "Ilya", enable: true }];
     const clientSnapshots: typeof clients[] = [];
-    let restartCalls = 0;
-    let outboundTestResult: unknown = { success: true, delay: 42, mode: "http" };
+    let updateCalls = 0;
+    let outboundTestResult: unknown = { success: true, delay: 42, mode: "tcp" };
     const mockFetch = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
         const request = new Request(input, init);
         const url = new URL(request.url);
@@ -26,26 +26,29 @@ describe("HttpXuiClient", () => {
         if (request.method === "POST") {
           expect(request.headers.get("x-csrf-token")).toBe("csrf");
         }
-        if (url.pathname === "/panel/xray/" && request.method === "POST") {
+        if (url.pathname === "/panel/api/xray/" && request.method === "POST") {
           return json({
             success: true,
-            obj: JSON.stringify({ xraySetting: template, inboundTags: [], outboundTestUrl: "" }),
+            obj: JSON.stringify({
+              xraySetting: template,
+              inboundTags: [],
+              outboundTestUrl: "https://probe.example/generate_204",
+            }),
           });
         }
-        if (url.pathname === "/panel/xray/update") {
+        if (url.pathname === "/panel/api/xray/update") {
           const form = await request.formData();
           template = JSON.parse(String(form.get("xraySetting"))) as XrayTemplate;
+          expect(form.get("outboundTestUrl")).toBe("https://probe.example/generate_204");
+          updateCalls += 1;
           return json({ success: true });
         }
-        if (url.pathname === "/panel/api/server/restartXrayService") {
-          restartCalls += 1;
-          return json({ success: true });
-        }
-        if (url.pathname === "/panel/xray/testOutbound") {
+        if (url.pathname === "/panel/api/xray/testOutbounds") {
           const form = await request.formData();
-          testedOutbound = String(form.get("outbound"));
+          testedOutbound = String(form.get("outbounds"));
           expect(String(form.get("allOutbounds"))).toContain("germany");
-          return json({ success: true, obj: outboundTestResult });
+          expect(form.get("mode")).toBe("tcp");
+          return json({ success: true, obj: [outboundTestResult] });
         }
         if (url.pathname === "/panel/api/inbounds/get/1") {
           return json({
@@ -75,16 +78,19 @@ describe("HttpXuiClient", () => {
     expect(await client.testOutbound(outbound, [...template.outbounds, outbound])).toEqual({
       success: true,
       delay: 42,
-      mode: "http",
+      mode: "tcp",
     });
-    outboundTestResult = { success: false, error: "probe failed", mode: "http" };
+    outboundTestResult = { success: false, error: "probe failed", mode: "tcp" };
     await expect(client.testOutbound(outbound, [...template.outbounds, outbound])).rejects.toThrow("probe failed");
     outboundTestResult = "42ms";
-    expect(await client.testOutbound(outbound, [...template.outbounds, outbound])).toEqual({ success: true });
+    await expect(client.testOutbound(outbound, [...template.outbounds, outbound])).rejects.toThrow(
+      "unsupported response shape",
+    );
+    outboundTestResult = { success: true };
     await client.updateTemplate({ ...template, outbounds: [...template.outbounds, outbound] });
-    expect(restartCalls).toBe(1);
+    expect(updateCalls).toBe(1);
     expect((await client.getTemplate()).outbounds.at(-1)?.tag).toBe("countries-exit-usa");
-    expect(JSON.parse(testedOutbound).tag).toBe("countries-exit-usa");
+    expect(JSON.parse(testedOutbound)[0].tag).toBe("countries-exit-usa");
     expect(await client.listClients()).toEqual([{ email: "ilya-phone", subId: "Ilya", inboundIds: [1] }]);
 
     const managed: ManagedClient = {
@@ -128,7 +134,7 @@ describe("HttpXuiClient", () => {
       }
       expect(request.headers.get("cookie")).toContain("session=legacy");
       expect(request.headers.get("x-csrf-token")).toBeNull();
-      if (url.pathname === "/panel/xray/") {
+      if (url.pathname === "/panel/api/xray/") {
         return json({
           success: true,
           msg: "ok",

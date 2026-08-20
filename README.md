@@ -40,7 +40,7 @@ client -> RU -> GE -> custom VLESS exit -> internet
 
 ## Требования
 
-- 3x-ui `3.2.5`.
+- 3x-ui `3.4.2`.
 - Один управляемый VLESS inbound на RU-сервере.
 - Существующий outbound `RU -> GE`.
 - HTTPS URL панели 3x-ui с доверенным сертификатом.

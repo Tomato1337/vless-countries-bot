@@ -20,6 +20,12 @@ export function createBot(config: BotConfig, store: Store, service: CountryServi
   const auth = (handler: (ctx: Context) => Promise<void>) => authorized(config, store, handler);
   const owner = (handler: (ctx: Context) => Promise<void>) => ownerOnly(config, handler);
 
+  bot.use(async (ctx, next) => {
+    const type = ctx.message ? "message" : ctx.callbackQuery ? "callback_query" : "other";
+    console.log(`[telegram] received update ${ctx.update.update_id} (${type})`);
+    await next();
+  });
+
   bot.command("start", auth((ctx) => showMain(ctx, config)));
   bot.command("help", auth(async (ctx) => {
     await ctx.reply(helpText());
@@ -575,11 +581,11 @@ function addPager(keyboard: InlineKeyboard, prefix: string, page: number, pages:
     return;
   }
   if (page > 0) {
-    keyboard.text("◀", `${prefix}:${page - 1}`);
+    keyboard.text("⏮", `${prefix}:0`).text("◀", `${prefix}:${page - 1}`);
   }
   keyboard.text(`${page + 1}/${pages}`, `${prefix}:${page}`);
   if (page + 1 < pages) {
-    keyboard.text("▶", `${prefix}:${page + 1}`);
+    keyboard.text("▶", `${prefix}:${page + 1}`).text("⏭", `${prefix}:${pages - 1}`);
   }
   keyboard.row();
 }

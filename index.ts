@@ -36,7 +36,8 @@ async function main(): Promise<void> {
     );
     process.once("SIGINT", () => bot.stop());
     process.once("SIGTERM", () => bot.stop());
-    console.log("Compatibility check passed. Starting Telegram long polling.");
+    await bot.init();
+    console.log(`Compatibility check passed. Starting Telegram long polling for @${bot.botInfo.username}.`);
     await bot.start();
   } finally {
     store.close();

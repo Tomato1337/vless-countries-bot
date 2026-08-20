@@ -21,6 +21,7 @@ export class HttpXuiClient implements XuiApi {
   private clientApiMode?: "modern" | "legacy";
   private inboundId?: number;
   private loginPromise?: Promise<void>;
+  private outboundTestUrl = "https://www.google.com/generate_204";
 
   constructor(
     private readonly config: HttpXuiClientConfig,
@@ -42,38 +43,46 @@ export class HttpXuiClient implements XuiApi {
   }
 
   async getTemplate(): Promise<XrayTemplate> {
-    const obj = await this.postForm("/panel/xray/", {});
+    const obj = await this.postForm("/panel/api/xray/", {});
     const response = parseMaybeJson(obj);
     let wrapper: JsonObject;
     try {
       wrapper = asJsonObject(response);
     } catch {
       throw new Error(
-        `3x-ui /panel/xray/ returned an unsupported response shape: ${describeShape(response)}`,
+        `3x-ui /panel/api/xray/ returned an unsupported response shape: ${describeShape(response)}`,
       );
+    }
+    if (typeof wrapper.outboundTestUrl === "string" && wrapper.outboundTestUrl) {
+      this.outboundTestUrl = wrapper.outboundTestUrl;
     }
     return asTemplate(parseMaybeJson(wrapper.xraySetting));
   }
 
   async updateTemplate(template: XrayTemplate): Promise<void> {
-    await this.postForm("/panel/xray/update", {
+    await this.postForm("/panel/api/xray/update", {
       xraySetting: JSON.stringify(template),
+      outboundTestUrl: this.outboundTestUrl,
     });
-    await this.postJson("/panel/api/server/restartXrayService", {});
   }
 
   async testOutbound(outbound: XrayOutbound, allOutbounds: XrayOutbound[]): Promise<OutboundTestResult> {
-    const value = parseMaybeJson(await this.postForm("/panel/xray/testOutbound", {
-      outbound: JSON.stringify(outbound),
+    const value = parseMaybeJson(await this.postForm("/panel/api/xray/testOutbounds", {
+      outbounds: JSON.stringify([outbound]),
       allOutbounds: JSON.stringify(allOutbounds),
+      mode: "tcp",
     }));
-    if (!value || typeof value !== "object" || Array.isArray(value)) {
-      // Legacy panels returned a scalar latency string on success.
-      return { success: true };
+    if (!Array.isArray(value) || value.length !== 1) {
+      throw new Error("3x-ui /panel/api/xray/testOutbounds returned an unsupported response shape");
     }
-    const result = value as JsonObject;
+    let result: JsonObject;
+    try {
+      result = asJsonObject(value[0]);
+    } catch {
+      throw new Error("3x-ui /panel/api/xray/testOutbounds returned an unsupported response shape");
+    }
     if (typeof result.success !== "boolean") {
-      throw new Error("3x-ui /panel/xray/testOutbound returned an unsupported response shape");
+      throw new Error("3x-ui /panel/api/xray/testOutbounds returned an unsupported response shape");
     }
     const parsed: OutboundTestResult = {
       success: result.success,

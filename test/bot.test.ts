@@ -49,6 +49,24 @@ describe("Telegram bot UI", () => {
     );
     expect(buttonTexts(calls.at(-1)?.payload)).toEqual([]);
   });
+
+  test("shows first and last page navigation for long exit lists", async () => {
+    const { bot, calls, store } = setupBot();
+    for (let index = 0; index < 17; index += 1) {
+      store.upsertManualExit(`us-${index}`, "vless://secret", {
+        tag: `countries-exit-us-${index}`,
+        protocol: "vless",
+      });
+    }
+
+    await bot.handleUpdate(messageUpdate("/countries"));
+    expect(buttonTexts(calls.at(-1)?.payload)).toContain("⏭");
+    expect(buttonTexts(calls.at(-1)?.payload)).not.toContain("⏮");
+
+    await bot.handleUpdate(callbackUpdate("m:exits:2", 2));
+    expect(buttonTexts(calls.at(-1)?.payload)).toContain("⏮");
+    expect(buttonTexts(calls.at(-1)?.payload)).not.toContain("⏭");
+  });
 });
 
 function setupBot() {
