@@ -2,7 +2,7 @@ import { Bot, InlineKeyboard } from "grammy";
 import type { Context } from "grammy";
 import { countryFlagFromSlug } from "./country-flag.ts";
 import { assertCountrySlug, CountryService } from "./country-service.ts";
-import type { NordVpnCityOption } from "./country-service.ts";
+import type { NordVpnCityOption, SyncResult } from "./country-service.ts";
 import { safeMessage } from "./sanitize.ts";
 import { Store } from "./store.ts";
 import type { JsonObject, NordVpnSource, VpnExit } from "./types.ts";
@@ -46,7 +46,7 @@ export function createBot(config: BotConfig, store: Store, service: CountryServi
   bot.command("sync", auth(async (ctx) => {
     await ctx.reply("Синхронизирую профили подписок...");
     const result = await service.sync(ctx.from!.id);
-    await ctx.reply(`Готово. Новых профилей: ${result.created.length}. Переименовано: ${result.renamed.length}.`);
+    await ctx.reply(syncSummary(result));
   }));
 
   bot.command("remove", auth(async (ctx) => {
@@ -98,7 +98,7 @@ export function createBot(config: BotConfig, store: Store, service: CountryServi
     await answer(ctx);
     await render(ctx, "Синхронизирую профили подписок...");
     const result = await service.sync(ctx.from!.id);
-    await ctx.reply(`Готово. Новых профилей: ${result.created.length}. Переименовано: ${result.renamed.length}.`);
+    await ctx.reply(syncSummary(result));
     await showMain(ctx, config);
   }));
   bot.callbackQuery("m:help", auth(async (ctx) => {
@@ -171,7 +171,7 @@ export function createBot(config: BotConfig, store: Store, service: CountryServi
     await answer(ctx);
     const countryId = callbackNumber(ctx, 1);
     const cityId = callbackNumber(ctx, 2);
-    await render(ctx, "Тестирую до пяти наименее загруженных NordVPN-серверов...");
+    await render(ctx, "Тестирую до пяти наиболее загруженных NordVPN-серверов...");
     try {
       const result = await service.addNordVpnRegion(ctx.from!.id, countryId, cityId);
       await ctx.reply(`Добавлен ${result.slug}: ${result.source.hostname}. Новых профилей: ${result.created.length}.`);
@@ -642,6 +642,11 @@ function parseTelegramId(value: string): number {
 
 function commandText(ctx: Context): string {
   return typeof ctx.match === "string" ? ctx.match.trim() : "";
+}
+
+function syncSummary(result: SyncResult): string {
+  const attached = result.attached.length ? ` Возвращено в inbound: ${result.attached.length}.` : "";
+  return `Готово. Новых профилей: ${result.created.length}. Переименовано: ${result.renamed.length}.${attached}`;
 }
 
 function exitSearchText(vpnExit: VpnExit): string {

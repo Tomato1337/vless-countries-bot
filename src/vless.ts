@@ -113,10 +113,9 @@ export function buildCountryOutbound(
       encryption: parsed.encryption,
       ...(parsed.flow ? { flow: parsed.flow } : {}),
     },
-    streamSettings: buildStreamSettings(parsed),
-    proxySettings: {
-      tag: geOutboundTag,
-      transportLayer: true,
+    streamSettings: {
+      ...buildStreamSettings(parsed),
+      sockopt: { dialerProxy: geOutboundTag },
     },
   };
 }

@@ -36,7 +36,8 @@ describe("VLESS Reality TCP parser", () => {
       encryption: "none",
       flow: "xtls-rprx-vision",
     });
-    expect(outbound.proxySettings).toEqual({ tag: "germany", transportLayer: true });
+    expect(outbound.proxySettings).toBeUndefined();
+    expect(outbound).toMatchObject({ streamSettings: { sockopt: { dialerProxy: "germany" } } });
   });
 
   test("keeps the compatibility parser limited to Reality TCP", () => {
@@ -52,6 +53,7 @@ describe("VLESS share URI transports", () => {
       security: "tls",
       wsSettings: { path: "/vpnjantit" },
       tlsSettings: { serverName: "premiusa3.vpnjantit.com" },
+      sockopt: { dialerProxy: "germany" },
     });
   });
 
@@ -71,6 +73,7 @@ describe("VLESS share URI transports", () => {
         alpn: ["h2", "http/1.1"],
         allowInsecure: false,
       },
+      sockopt: { dialerProxy: "germany" },
     });
   });
 
@@ -85,6 +88,7 @@ describe("VLESS share URI transports", () => {
         multiMode: true,
       },
       tlsSettings: { serverName: "grpc.example.com" },
+      sockopt: { dialerProxy: "germany" },
     });
     expect(parseVlessUri(GRPC_URI.replace("serviceName=my-service", "path=%2Fmy-service")))
       .toMatchObject({ serviceName: "/my-service" });

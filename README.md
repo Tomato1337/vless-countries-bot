@@ -40,7 +40,7 @@ client -> RU -> GE -> custom VLESS exit -> internet
 
 ## Требования
 
-- 3x-ui `3.4.2`.
+- 3x-ui `3.11.0` (Xray `v26.10.31`).
 - Один управляемый VLESS inbound на RU-сервере.
 - Существующий outbound `RU -> GE`.
 - HTTPS URL панели 3x-ui с доверенным сертификатом.
@@ -103,13 +103,13 @@ NordVPN outbounds используют:
 {
   "mtu": 1280,
   "noKernelTun": true,
-  "proxySettings": {
-    "tag": "<GE_OUTBOUND_TAG>",
-    "transportLayer": true
+  "streamSettings": {
+    "sockopt": { "dialerProxy": "<GE_OUTBOUND_TAG>" }
   }
 }
 ```
 
-`transportLayer` сохраняет UDP-границы WireGuard-пакетов при передаче NordLynx
-через Germany VLESS outbound. Без него короткий IP-check может работать, а
-обычные страницы и загрузки зависают в `pending`.
+`sockopt.dialerProxy` ведёт WireGuard-пакеты NordLynx через Germany VLESS
+outbound на транспортном уровне, сохраняя UDP-границы. Прежний
+`proxySettings.transportLayer` Xray `v26.9.8+` отвергает при запуске
+(`The feature outbound "proxySettings" has been removed`).

@@ -58,7 +58,8 @@ describe("NordVPN", () => {
 
     expect(outbound.tag).toBe("countries-nord-exit-us-chicago");
     expect(outbound.protocol).toBe("wireguard");
-    expect(outbound.proxySettings).toEqual({ tag: "germany", transportLayer: true });
+    expect(outbound.proxySettings).toBeUndefined();
+    expect(outbound.streamSettings).toEqual({ sockopt: { dialerProxy: "germany" } });
     expect((outbound.settings as { peers: unknown[] }).peers).toEqual([
       { publicKey: "public-key-2", endpoint: "198.51.100.2:51820" },
     ]);

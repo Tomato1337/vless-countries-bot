@@ -117,43 +117,115 @@ export class HttpXuiClient implements XuiApi {
   }
 
   async createClient(client: ManagedClient, inboundId: number): Promise<void> {
-    await this.updateInboundClients(inboundId, (clients) => {
-      if (clients.some((value) => clientEmail(value).toLowerCase() === client.email.toLowerCase())) {
-        throw new Error(`3x-ui client email already exists: ${client.email}`);
-      }
-      clients.push({
-        id: client.uuid,
-        flow: "",
-        email: client.email,
-        limitIp: 0,
-        totalGB: 0,
-        expiryTime: 0,
-        enable: true,
-        tgId: "",
-        subId: client.subId,
-        reset: 0,
+    if (this.clientApiMode === "legacy") {
+      await this.updateInboundClients(inboundId, (clients) => {
+        if (clients.some((value) => clientEmail(value).toLowerCase() === client.email.toLowerCase())) {
+          throw new Error(`3x-ui client email already exists: ${client.email}`);
+        }
+        clients.push({
+          id: client.uuid,
+          flow: "",
+          email: client.email,
+          limitIp: 0,
+          totalGB: 0,
+          expiryTime: 0,
+          enable: true,
+          tgId: 0,
+          subId: client.subId,
+          reset: 0,
+        });
       });
-    });
+      return;
+    }
+    // 3x-ui >= 3.9 ignores settings.clients on /inbounds/update, and since 3.2.5 /clients/add rejects a subId
+    // already owned by another client ("subId already in use"; upstream #4759). Per-exit profiles must share the
+    // subscription's subId, so the record is created through /inbounds/add (which links clients without that check)
+    // on a disabled loopback staging inbound, attached to the target inbound, and the staging inbound is deleted.
+    // Deleting an inbound only detaches its clients.
+    const staging = asJsonObject(await this.postJson("/panel/api/inbounds/add", {
+      remark: `countries-staging-${client.uuid}`,
+      tag: `countries-staging-${client.uuid}`,
+      enable: false,
+      listen: "127.0.0.1",
+      port: 20000 + Math.floor(Math.random() * 40000),
+      protocol: "vless",
+      expiryTime: 0,
+      total: 0,
+      up: 0,
+      down: 0,
+      settings: JSON.stringify({
+        clients: [{
+          id: client.uuid,
+          email: client.email,
+          subId: client.subId,
+          flow: "",
+          limitIp: 0,
+          totalGB: 0,
+          expiryTime: 0,
+          enable: true,
+          tgId: 0,
+          reset: 0,
+        }],
+        decryption: "none",
+      }),
+      streamSettings: JSON.stringify({ network: "tcp", security: "none" }),
+      sniffing: JSON.stringify({ enabled: false }),
+    }));
+    const stagingId = Number(staging.id);
+    if (!Number.isSafeInteger(stagingId) || stagingId <= 0) {
+      throw new Error("3x-ui did not return the staging inbound id");
+    }
+    try {
+      await this.attachClient(client.email, inboundId);
+    } catch (error) {
+      await this.postJson(`/panel/api/clients/del/${encodeURIComponent(client.email)}`, {}).catch(() => undefined);
+      throw error;
+    } finally {
+      await this.postJson(`/panel/api/inbounds/del/${stagingId}`, {});
+    }
+  }
+
+  async attachClient(email: string, inboundId: number): Promise<void> {
+    if (this.clientApiMode === "legacy") {
+      throw new Error("Legacy 3x-ui panels keep clients inside the inbound; there is nothing to attach");
+    }
+    await this.postJson(`/panel/api/clients/${encodeURIComponent(email)}/attach`, { inboundIds: [inboundId] });
   }
 
   async renameClient(client: ManagedClient, nextEmail: string, inboundId: number): Promise<void> {
-    await this.updateInboundClients(inboundId, (clients) => {
-      if (clients.some((value) => clientEmail(value).toLowerCase() === nextEmail.toLowerCase())) {
-        throw new Error(`3x-ui client email already exists: ${nextEmail}`);
-      }
-      const current = requireInboundClient(clients, client.uuid);
-      current.email = nextEmail;
+    if (this.clientApiMode === "legacy") {
+      await this.updateInboundClients(inboundId, (clients) => {
+        if (clients.some((value) => clientEmail(value).toLowerCase() === nextEmail.toLowerCase())) {
+          throw new Error(`3x-ui client email already exists: ${nextEmail}`);
+        }
+        const current = requireInboundClient(clients, client.uuid);
+        current.email = nextEmail;
+      });
+      return;
+    }
+    const hydrated = asJsonObject(await this.get(`/panel/api/clients/get/${encodeURIComponent(client.email)}`));
+    const record = asJsonObject(hydrated.client);
+    if (String(record.uuid ?? "") !== client.uuid) {
+      throw new Error(`3x-ui client ${client.email} has a different UUID than the managed profile`);
+    }
+    await this.postJson(`/panel/api/clients/update/${encodeURIComponent(client.email)}`, {
+      ...clientUpdatePayload(record),
+      email: nextEmail,
     });
   }
 
   async deleteClient(client: Pick<ManagedClient, "email" | "uuid">): Promise<void> {
-    await this.updateInboundClients(this.requireInboundId(), (clients) => {
-      const index = clients.findIndex((value) => clientId(value) === client.uuid);
-      if (index < 0) {
-        throw new Error(`3x-ui inbound client does not exist: ${client.email}`);
-      }
-      clients.splice(index, 1);
-    });
+    if (this.clientApiMode === "legacy") {
+      await this.updateInboundClients(this.requireInboundId(), (clients) => {
+        const index = clients.findIndex((value) => clientId(value) === client.uuid);
+        if (index < 0) {
+          throw new Error(`3x-ui inbound client does not exist: ${client.email}`);
+        }
+        clients.splice(index, 1);
+      });
+      return;
+    }
+    await this.postJson(`/panel/api/clients/del/${encodeURIComponent(client.email)}`, {});
   }
 
   private async login(): Promise<void> {
@@ -424,6 +496,34 @@ function clientEmail(client: JsonObject): string {
 
 function clientId(client: JsonObject): string {
   return String(client.id ?? "");
+}
+
+// Mirrors the 3x-ui frontend (useClients.setEnable): /clients/update replaces the whole client, and the
+// hydrated record's numeric `id` is the row id, so the VLESS UUID must be sent back as `id`.
+function clientUpdatePayload(record: JsonObject): JsonObject {
+  return {
+    email: record.email,
+    subId: record.subId,
+    id: record.uuid,
+    password: record.password,
+    auth: record.auth,
+    flow: record.flow || "",
+    security: record.security || "auto",
+    totalGB: Number(record.totalGB) || 0,
+    expiryTime: Number(record.expiryTime) || 0,
+    limitIp: Number(record.limitIp) || 0,
+    limitHwid: Number(record.limitHwid) || 0,
+    tgId: Number(record.tgId) || 0,
+    reset: Number(record.reset) || 0,
+    resetDay: Number(record.resetDay) || 0,
+    resetWeekday: Number(record.resetWeekday) || 0,
+    resetMax: Number(record.resetMax) || 0,
+    trafficReset: record.trafficReset || "never",
+    trafficResetDay: Number(record.trafficResetDay) || 1,
+    group: record.group || "",
+    comment: record.comment || "",
+    enable: record.enable !== false,
+  };
 }
 
 function requireInboundClient(clients: JsonObject[], uuid: string): JsonObject {

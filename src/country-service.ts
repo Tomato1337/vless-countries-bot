@@ -32,6 +32,7 @@ export interface CountryServiceConfig {
 export interface SyncResult {
   created: string[];
   renamed: string[];
+  attached: string[];
   skipped: number;
 }
 
@@ -154,7 +155,7 @@ export class CountryService {
         templateApplied = true;
         this.store.upsertManualExit(slug, uri, outbound);
         const sync = previous
-          ? { created: [], renamed: [], skipped: 0 }
+          ? { created: [], renamed: [], attached: [], skipped: 0 }
           : await this.syncExit(slug, created, renamed);
         this.store.audit(actorId, "set", slug, true, previous ? "updated" : "created");
         return { createdCountry: !previous, ...sync };
@@ -274,14 +275,23 @@ export class CountryService {
       const renamed: RenamedClient[] = [];
       try {
         let skipped = 0;
+        const attached: string[] = [];
         for (const vpnExit of this.store.listExits()) {
           const result = await this.syncExit(vpnExit.slug, created, renamed);
           skipped += result.skipped;
+          attached.push(...result.attached);
         }
-        this.store.audit(actorId, "sync", null, true, `created=${created.length}, renamed=${renamed.length}`);
+        this.store.audit(
+          actorId,
+          "sync",
+          null,
+          true,
+          `created=${created.length}, renamed=${renamed.length}, attached=${attached.length}`,
+        );
         return {
           created: created.map((client) => client.email),
           renamed: renamed.map(({ after }) => after.email),
+          attached,
           skipped,
         };
       } catch (error) {
@@ -303,6 +313,7 @@ export class CountryService {
 
       const snapshot = await this.xui.getTemplate();
       const next = removeExit(snapshot, slug, vpnExit.outbound.tag);
+      const panelEmails = new Set((await this.xui.listClients()).map((client) => client.email.toLowerCase()));
       const clients = this.store.listManagedClients(slug);
       const deleted: ManagedClient[] = [];
       let templateApplied = false;
@@ -310,6 +321,9 @@ export class CountryService {
 
       try {
         for (const client of clients) {
+          if (!panelEmails.has(client.email.toLowerCase())) {
+            continue;
+          }
           await this.xui.deleteClient(client);
           deleted.push(client);
         }
@@ -384,8 +398,10 @@ export class CountryService {
     countryFlagFromSlug(slug);
     const clients = await this.xui.listClients();
     const subscriptions = collectSubscriptions(clients, this.config.inboundId);
-    const panelEmails = new Set(clients.map((client) => client.email.toLowerCase()));
+    const panelByEmail = new Map(clients.map((client) => [client.email.toLowerCase(), client]));
     const pending: ManagedClient[] = [];
+    const pendingRestores: RenamedClient[] = [];
+    const pendingAttaches: ManagedClient[] = [];
     const pendingRenames: RenamedClient[] = [];
     const managedBySubId = new Map<string, ManagedClient>();
 
@@ -399,10 +415,25 @@ export class CountryService {
     for (const subscription of subscriptions) {
       const email = managedClientEmail(subscription.slug, slug);
       const existing = managedBySubId.get(subscription.subId);
+      const collides = panelByEmail.has(email.toLowerCase()) && existing?.email.toLowerCase() !== email.toLowerCase();
+      if (existing) {
+        const panelClient = panelByEmail.get(existing.email.toLowerCase());
+        if (!panelClient) {
+          // The local record survived but 3x-ui lost the client: recreate it with the same UUID.
+          if (collides) {
+            throw new Error(`Managed email collides with an existing 3x-ui client: ${email}`);
+          }
+          pendingRestores.push({ before: existing, after: { ...existing, email } });
+          continue;
+        }
+        if (!panelClient.inboundIds.includes(this.config.inboundId)) {
+          pendingAttaches.push(existing);
+        }
+      }
       if (existing?.email === email) {
         continue;
       }
-      if (panelEmails.has(email.toLowerCase()) && existing?.email.toLowerCase() !== email.toLowerCase()) {
+      if (collides) {
         throw new Error(`Managed email collides with an existing 3x-ui client: ${email}`);
       }
       if (existing) {
@@ -417,6 +448,10 @@ export class CountryService {
       });
     }
 
+    for (const client of pendingAttaches) {
+      await this.xui.attachClient(client.email, this.config.inboundId);
+    }
+
     for (const rename of pendingRenames) {
       await this.xui.renameClient(rename.before, rename.after.email, this.config.inboundId);
       try {
@@ -428,15 +463,23 @@ export class CountryService {
       renamed.push(rename);
     }
 
+    for (const restore of pendingRestores) {
+      await this.xui.createClient(restore.after, this.config.inboundId);
+      this.store.deleteManagedClient(restore.before.email);
+      this.store.addManagedClient(restore.after);
+      created.push(restore.after);
+    }
+
     for (const client of pending) {
       await this.xui.createClient(client, this.config.inboundId);
       this.store.addManagedClient(client);
       created.push(client);
     }
     return {
-      created: pending.map((client) => client.email),
+      created: [...pendingRestores.map(({ after }) => after), ...pending].map((client) => client.email),
       renamed: pendingRenames.map(({ after }) => after.email),
-      skipped: subscriptions.length - pending.length - pendingRenames.length,
+      attached: pendingAttaches.map((client) => client.email),
+      skipped: subscriptions.length - pending.length - pendingRestores.length - pendingRenames.length,
     };
   }
 
@@ -543,11 +586,13 @@ function requireById<T extends { id: number }>(items: T[], id: number, label: st
   return item;
 }
 
+// NordVPN's least-loaded servers are often idle because they do not work, so automatic selection walks the
+// load-ascending catalog from the end: most-loaded first.
 function selectServers(servers: NordVpnServer[], serverId?: number): NordVpnServer[] {
   if (serverId !== undefined) {
     return [requireById(servers, serverId, "NordVPN server")];
   }
-  return servers.slice(0, 5);
+  return servers.slice(-5).reverse();
 }
 
 function selectRepairServers(
@@ -559,6 +604,6 @@ function selectRepairServers(
     return [requireById(servers, serverId, "NordVPN server")];
   }
   const current = servers.find((server) => server.hostname === currentHostname);
-  const alternatives = servers.filter((server) => server.hostname !== currentHostname).slice(0, 4);
-  return current ? [...alternatives, current] : alternatives.slice(0, 5);
+  const alternatives = servers.filter((server) => server.hostname !== currentHostname).reverse();
+  return current ? [...alternatives.slice(0, 4), current] : alternatives.slice(0, 5);
 }

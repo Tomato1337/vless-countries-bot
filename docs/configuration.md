@@ -73,12 +73,19 @@ ilya-laptop
 `subId` должен быть непустым ASCII-значением, нормализуемым в уникальный
 lowercase slug. При коллизии `/sync` завершится ошибкой без изменения панели.
 
-Чтобы экспортированный remark начинался с emoji, задайте в настройках подписок
-3x-ui `Remark Model` равным:
+3x-ui `3.11` строит имя конфига по `Remark Template` (Settings → Subscription),
+по умолчанию `{{INBOUND}}-{{EMAIL}}|📊{{TRAFFIC_LEFT}}|⏳{{DAYS_LEFT}}D`.
+`{{EMAIL}}` выводится только в первом конфиге каждого `subId`, остальные
+получают имя inbound (например, `vless`). Чтобы каждый профиль страны
+сохранял своё имя, включите там же `Show identity on every link`
+(`subShowIdentityOnAllLinks`).
 
-```text
--ei
-```
+С 3x-ui `3.2.5` `/panel/api/clients/add` запрещает общий `subId` у разных
+клиентов, а с `3.9` `/inbounds/update` игнорирует `settings.clients`. Поэтому бот
+создаёт профиль через временный выключенный inbound `countries-staging-<uuid>`
+на `127.0.0.1`, привязывает клиента к управляемому inbound через
+`/clients/<email>/attach` и удаляет временный inbound. Переименование и
+удаление идут через `/clients/update` и `/clients/del`.
 
 ## NordVPN private key
 
@@ -110,22 +117,22 @@ NordVPN.
     "mtu": 1280,
     "noKernelTun": true
   },
-  "proxySettings": {
-    "tag": "<GE_OUTBOUND_TAG>",
-    "transportLayer": true
+  "streamSettings": {
+    "sockopt": { "dialerProxy": "<GE_OUTBOUND_TAG>" }
   }
 }
 ```
 
 Причины:
 
-- `transportLayer: true` сохраняет UDP-пакеты NordLynx при передаче через
-  Germany VLESS outbound;
+- `sockopt.dialerProxy` сохраняет UDP-пакеты NordLynx при передаче через
+  Germany VLESS outbound; устаревший `proxySettings` Xray `v26.9.8+` не
+  принимает;
 - `noKernelTun: true` изолирует регионы с одинаковым внутренним адресом
   `10.5.0.2/32`;
 - MTU `1280` уменьшает риск fragmentation и зависаний во вложенной цепочке.
 
-Если убрать `transportLayer`, короткий IP-check может проходить, но страницы и
+Без chaining через GE короткий IP-check может проходить, но страницы и
 загрузки начинают зависать в `pending`.
 
 ## Ручные VLESS exits

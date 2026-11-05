@@ -150,9 +150,8 @@ export function buildNordVpnOutbound(
       mtu: 1280,
       noKernelTun: true,
     },
-    proxySettings: {
-      tag: geOutboundTag,
-      transportLayer: true,
+    streamSettings: {
+      sockopt: { dialerProxy: geOutboundTag },
     },
   };
 }

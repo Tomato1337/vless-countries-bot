@@ -26,6 +26,7 @@ export class MockXui implements XuiApi {
   created: ManagedClient[] = [];
   deleted: string[] = [];
   renamed: Array<{ from: string; to: string }> = [];
+  attached: string[] = [];
   tested: XrayOutbound[] = [];
   failTestHostnames = new Set<string>();
   failUpdateOnCall?: number;
@@ -73,6 +74,15 @@ export class MockXui implements XuiApi {
     }
     this.created.push(structuredClone(client));
     this.clients.push({ email: client.email, subId: client.subId, inboundIds: [inboundId] });
+  }
+
+  async attachClient(email: string, inboundId: number): Promise<void> {
+    this.attached.push(email);
+    const existing = this.clients.find((item) => item.email === email);
+    if (!existing) {
+      throw new Error("attach failed");
+    }
+    existing.inboundIds.push(inboundId);
   }
 
   async deleteClient(client: Pick<ManagedClient, "email" | "uuid">): Promise<void> {

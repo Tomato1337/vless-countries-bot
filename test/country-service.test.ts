@@ -130,6 +130,36 @@ describe("CountryService", () => {
     ]);
   });
 
+  test("sync re-attaches detached profiles and recreates ones the panel lost, keeping UUIDs", async () => {
+    const { store, xui, service } = setup();
+    await service.setCountry(1, "usa", REALITY_URI);
+    const previous = store.listManagedClients("usa");
+    xui.clients.find((item) => item.email === "🇺🇸-ilya-usa")!.inboundIds = [];
+    xui.clients = xui.clients.filter((item) => item.email !== "🇺🇸-denis-usa");
+    xui.created = [];
+
+    const result = await service.sync(1);
+
+    expect(result.attached).toEqual(["🇺🇸-ilya-usa"]);
+    expect(result.created).toEqual(["🇺🇸-denis-usa"]);
+    expect(xui.created.map((client) => client.uuid)).toEqual([
+      previous.find((client) => client.email === "🇺🇸-denis-usa")!.uuid,
+    ]);
+    expect(store.listManagedClients("usa")).toEqual(previous);
+    expect(xui.clients.filter((item) => item.email.startsWith("🇺🇸-")).map((item) => item.inboundIds)).toEqual([[1], [1]]);
+  });
+
+  test("removing a country skips profiles the panel no longer has", async () => {
+    const { store, xui, service } = setup();
+    await service.setCountry(1, "usa", REALITY_URI);
+    xui.clients = xui.clients.filter((item) => item.email !== "🇺🇸-denis-usa");
+
+    await service.removeCountry(1, "usa");
+
+    expect(xui.deleted).toEqual(["🇺🇸-ilya-usa"]);
+    expect(store.getExit("usa")).toBeUndefined();
+  });
+
   test("rejects a country slug without an inferable flag before updating xray", async () => {
     const { store, xui, service } = setup();
     const template = structuredClone(xui.template);
@@ -178,21 +208,22 @@ describe("CountryService NordVPN", () => {
       "🇺🇸-ilya-us-chicago",
     ]);
     const outbound = xui.template.outbounds.find((item) => item.tag === "countries-nord-exit-us-chicago");
-    expect(outbound?.proxySettings).toEqual({ tag: "germany", transportLayer: true });
+    expect(outbound?.proxySettings).toBeUndefined();
+    expect(outbound).toMatchObject({ streamSettings: { sockopt: { dialerProxy: "germany" } } });
     await expect(service.setCountry(1, "us-chicago", REALITY_URI)).rejects.toThrow("managed by NordVPN");
   });
 
-  test("tries the next least-loaded hostname and repairs without changing UUIDs", async () => {
+  test("tries the next most-loaded hostname and repairs without changing UUIDs", async () => {
     const { store, xui, catalog, service } = setupNord();
-    xui.failTestHostnames.add("198.51.100.1");
+    xui.failTestHostnames.add("198.51.100.2");
 
     const added = await service.addNordVpnRegion(1, 1, 100);
-    expect(added.attemptedHostnames).toEqual(["us-low.nordvpn.com", "us-backup.nordvpn.com"]);
-    expect(added.source.hostname).toBe("us-backup.nordvpn.com");
+    expect(added.attemptedHostnames).toEqual(["us-backup.nordvpn.com", "us-low.nordvpn.com"]);
+    expect(added.source.hostname).toBe("us-low.nordvpn.com");
     const uuids = store.listManagedClients("us-chicago").map((client) => client.uuid);
 
     catalog.mockServers = [
-      nordServer(4, "us-repaired.nordvpn.com", "198.51.100.4", 1, 100, "Chicago"),
+      nordServer(4, "us-repaired.nordvpn.com", "198.51.100.4", 90, 100, "Chicago"),
       ...catalog.mockServers,
     ];
     const repaired = await service.repairNordVpnRegion(1, "us-chicago");
