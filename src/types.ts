@@ -82,8 +82,9 @@ export interface XuiApi {
   updateTemplate(template: XrayTemplate): Promise<void>;
   testOutbound(outbound: XrayOutbound, allOutbounds: XrayOutbound[]): Promise<OutboundTestResult>;
   listClients(): Promise<XuiClient[]>;
-  createClient(client: ManagedClient, inboundId: number): Promise<void>;
+  createClient(client: Pick<ManagedClient, "email" | "subId" | "uuid">, inboundId: number): Promise<void>;
   attachClient(email: string, inboundId: number): Promise<void>;
+  getSubscriptionBaseUrl(): Promise<string | undefined>;
   renameClient(client: ManagedClient, nextEmail: string, inboundId: number): Promise<void>;
   deleteClient(client: Pick<ManagedClient, "email" | "uuid">): Promise<void>;
 }

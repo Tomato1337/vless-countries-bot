@@ -31,7 +31,9 @@ client -> RU -> GE -> custom VLESS exit -> internet
 - Несколько регионов одной страны, например Chicago и New York.
 - Автоматический подбор рабочего NordVPN hostname и отдельный `Repair`.
 - Ручные VLESS exits через `/set`.
-- Синхронизация новых подписок через `/sync`.
+- Синхронизация новых подписок через `/sync`, включая профиль `<subId>-russia`.
+- Создание пользователя владельцем через `/adduser`: device-, russia- и
+  страновые профили плюс ссылка подписки.
 - Разделение прав владельца и доверенных Telegram-пользователей.
 - Безопасное изменение Xray-template с backup, outbound test, rollback и
   штатным restart Xray.

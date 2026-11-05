@@ -1,5 +1,7 @@
 import type { ManagedClient, OutboundTestResult, XrayOutbound, XrayTemplate, XuiApi, XuiClient } from "../src/types.ts";
 
+type BaseClient = Pick<ManagedClient, "email" | "subId" | "uuid">;
+
 export const REALITY_URI =
   "vless://74b0b096-5d02-11f1-a319-52cf4084cd34@usa12.vpnjantit.com:443?type=tcp&security=reality&sni=cloudflare.com&fp=chrome&pbk=g03nwLrMnwsZs7posvVRTelixQToNkNV2-QQCZa1Mjo&sid=ea81553e93920d38&flow=xtls-rprx-vision#usa";
 export const NORD_PRIVATE_KEY = Buffer.alloc(32, 1).toString("base64");
@@ -11,7 +13,10 @@ export function baseTemplate(): XrayTemplate {
       { tag: "direct", protocol: "freedom", settings: {} },
     ],
     routing: {
-      rules: [{ type: "field", network: "tcp,udp", outboundTag: "germany" }],
+      rules: [
+        { type: "field", user: ["regexp:.*-russia$"], outboundTag: "direct" },
+        { type: "field", network: "tcp,udp", outboundTag: "germany" },
+      ],
     },
   };
 }
@@ -21,9 +26,12 @@ export class MockXui implements XuiApi {
   clients: XuiClient[] = [
     { email: "ilya-phone", subId: "Ilya", inboundIds: [1] },
     { email: "ilya-pc", subId: "Ilya", inboundIds: [1] },
+    { email: "ilya-russia", subId: "Ilya", inboundIds: [1] },
     { email: "denis-phone", subId: "Denis", inboundIds: [1] },
+    { email: "denis-russia", subId: "Denis", inboundIds: [1] },
   ];
-  created: ManagedClient[] = [];
+  created: BaseClient[] = [];
+  subscriptionBaseUrl: string | undefined = "https://sub.test:2096/sub/";
   deleted: string[] = [];
   renamed: Array<{ from: string; to: string }> = [];
   attached: string[] = [];
@@ -68,7 +76,7 @@ export class MockXui implements XuiApi {
     return structuredClone(this.clients);
   }
 
-  async createClient(client: ManagedClient, inboundId: number): Promise<void> {
+  async createClient(client: BaseClient, inboundId: number): Promise<void> {
     if (client.email === this.failCreateEmail) {
       throw new Error("create failed");
     }
@@ -83,6 +91,10 @@ export class MockXui implements XuiApi {
       throw new Error("attach failed");
     }
     existing.inboundIds.push(inboundId);
+  }
+
+  async getSubscriptionBaseUrl(): Promise<string | undefined> {
+    return this.subscriptionBaseUrl;
   }
 
   async deleteClient(client: Pick<ManagedClient, "email" | "uuid">): Promise<void> {

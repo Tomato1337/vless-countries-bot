@@ -76,6 +76,15 @@ export function createBot(config: BotConfig, store: Store, service: CountryServi
 
   bot.command("trusted", owner((ctx) => showTrusted(ctx, store)));
 
+  bot.command("adduser", owner(async (ctx) => {
+    const name = commandText(ctx);
+    if (!name) {
+      await ctx.reply("Использование: /adduser petya");
+      return;
+    }
+    await createUser(ctx, service, name);
+  }));
+
   bot.callbackQuery("m:home", auth(async (ctx) => {
     await answer(ctx);
     await clearWizard(ctx, store);
@@ -108,6 +117,16 @@ export function createBot(config: BotConfig, store: Store, service: CountryServi
   bot.callbackQuery("m:trusted", owner(async (ctx) => {
     await answer(ctx);
     await showTrusted(ctx, store);
+  }));
+  bot.callbackQuery("m:user", owner(async (ctx) => {
+    await answer(ctx);
+    saveWizard(ctx, store, "user-add", "name", {});
+    await render(
+      ctx,
+      "Введите имя нового пользователя (латиница, цифры, дефисы), например petya. "
+        + "Будут созданы petya-pc, petya-phone, petya-russia и профили всех стран.",
+      cancelKeyboard(),
+    );
   }));
 
   bot.callbackQuery(/^x:v:(\d+)$/, auth(async (ctx) => {
@@ -316,6 +335,15 @@ export function createBot(config: BotConfig, store: Store, service: CountryServi
       await showTrusted(ctx, store);
       return;
     }
+    if (session.flow === "user-add" && session.step === "name") {
+      await clearWizard(ctx, store);
+      if (ctx.from?.id !== config.ownerId) {
+        await ctx.reply("Команда доступна только владельцу.");
+        return;
+      }
+      await createUser(ctx, service, text);
+      return;
+    }
     if (session.flow === "search" && session.step === "exits") {
       await clearWizard(ctx, store);
       await showExits(ctx, service, 0, text);
@@ -351,7 +379,7 @@ async function showMain(ctx: Context, config: BotConfig): Promise<void> {
     .row()
     .text("Help", "m:help");
   if (ctx.from?.id === config.ownerId) {
-    keyboard.text("Trusted users", "m:trusted");
+    keyboard.text("Trusted users", "m:trusted").row().text("Add user", "m:user");
   }
   await render(ctx, "VPN exits: выберите действие.", keyboard);
 }
@@ -489,6 +517,18 @@ async function showTrusted(ctx: Context, store: Store): Promise<void> {
   }
   keyboard.text("Главное меню", "m:home");
   await render(ctx, ids.length ? `Trusted users:\n${ids.join("\n")}` : "Trusted users: список пуст.", keyboard);
+}
+
+async function createUser(ctx: Context, service: CountryService, name: string): Promise<void> {
+  await ctx.reply(`Создаю пользователя ${name}...`);
+  const result = await service.createUser(ctx.from!.id, name);
+  const lines = [
+    `Пользователь ${result.subId} создан.`,
+    `Профили: ${result.profiles.join(", ")}.`,
+    `Профилей стран: ${result.created.length}.`,
+    result.subscriptionUrl ? `Подписка: ${result.subscriptionUrl}` : "Подписки в 3x-ui выключены — ссылки нет.",
+  ];
+  await ctx.reply(lines.join("\n"));
 }
 
 async function applyManualExit(ctx: Context, service: CountryService, slug: string, uri: string): Promise<void> {
@@ -677,5 +717,6 @@ function helpText(): string {
     "/remove usa - удалить exit после подтверждения",
     "/sync - добавить недостающие профили подписок",
     "/allow <telegram-id>, /deny <telegram-id>, /trusted - управление доступом владельцем",
+    "/adduser <name> - новый пользователь: <name>-pc, <name>-phone, <name>-russia и профили стран (только владелец)",
   ].join("\n");
 }

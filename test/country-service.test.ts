@@ -67,7 +67,48 @@ describe("CountryService", () => {
     await service.setCountry(1, "usa", REALITY_URI);
     expect((await service.sync(1)).created).toEqual([]);
     xui.clients.push({ email: "maria-phone", subId: "Maria", inboundIds: [1] });
-    expect((await service.sync(1)).created).toEqual(["🇺🇸-maria-usa"]);
+    expect((await service.sync(1)).created).toEqual(["maria-russia", "🇺🇸-maria-usa"]);
+  });
+
+  test("sync adds a missing russia profile only when the panel routes -russia to an outbound", async () => {
+    const { xui, service } = setup();
+    xui.clients = xui.clients.filter((client) => client.email !== "denis-russia");
+    const template = structuredClone(xui.template);
+    xui.template.routing.rules = xui.template.routing.rules.filter((rule) => !rule.user);
+
+    await expect(service.sync(1)).rejects.toThrow("russia profiles would use the default route");
+    expect(xui.created).toEqual([]);
+
+    xui.template = template;
+    expect((await service.sync(1)).created).toEqual(["denis-russia"]);
+    expect(xui.clients).toContainEqual({ email: "denis-russia", subId: "Denis", inboundIds: [1] });
+  });
+
+  test("creates a user with device, russia and country profiles", async () => {
+    const { store, xui, service } = setup();
+    await service.setCountry(1, "usa", REALITY_URI);
+
+    const result = await service.createUser(1, " Petya ");
+
+    expect(result.subId).toBe("petya");
+    expect(result.profiles).toEqual(["petya-pc", "petya-phone", "petya-russia"]);
+    expect(result.created).toEqual(["🇺🇸-petya-usa"]);
+    expect(result.subscriptionUrl).toBe("https://sub.test:2096/sub/petya");
+    expect(store.listManagedClients("usa").map((client) => client.subId)).toContain("petya");
+    await expect(service.createUser(1, "petya")).rejects.toThrow("Subscription already exists");
+    await expect(service.createUser(1, "ilya")).rejects.toThrow("Subscription already exists");
+    await expect(service.createUser(1, "петя")).rejects.toThrow("Имя пользователя");
+  });
+
+  test("rolls back every profile of a new user when a country profile fails", async () => {
+    const { store, xui, service } = setup();
+    await service.setCountry(1, "usa", REALITY_URI);
+    xui.failCreateEmail = "🇺🇸-petya-usa";
+
+    await expect(service.createUser(1, "petya")).rejects.toThrow("create failed");
+
+    expect(xui.clients.some((client) => client.subId === "petya")).toBeFalse();
+    expect(store.listManagedClients("usa").some((client) => client.subId === "petya")).toBeFalse();
   });
 
   test("rolls back a new country when a profile cannot be created", async () => {
@@ -91,7 +132,9 @@ describe("CountryService", () => {
     expect(xui.clients.map((client) => client.email)).toEqual([
       "ilya-phone",
       "ilya-pc",
+      "ilya-russia",
       "denis-phone",
+      "denis-russia",
     ]);
   });
 

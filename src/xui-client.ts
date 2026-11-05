@@ -116,7 +116,7 @@ export class HttpXuiClient implements XuiApi {
     });
   }
 
-  async createClient(client: ManagedClient, inboundId: number): Promise<void> {
+  async createClient(client: Pick<ManagedClient, "email" | "subId" | "uuid">, inboundId: number): Promise<void> {
     if (this.clientApiMode === "legacy") {
       await this.updateInboundClients(inboundId, (clients) => {
         if (clients.some((value) => clientEmail(value).toLowerCase() === client.email.toLowerCase())) {
@@ -183,6 +183,13 @@ export class HttpXuiClient implements XuiApi {
     } finally {
       await this.postJson(`/panel/api/inbounds/del/${stagingId}`, {});
     }
+  }
+
+  async getSubscriptionBaseUrl(): Promise<string | undefined> {
+    // defaultSettings resolves subURI from subDomain/subPort/subPath and the request host, as the panel UI does.
+    const settings = asJsonObject(await this.postForm("/panel/api/setting/defaultSettings", {}));
+    const base = typeof settings.subURI === "string" ? settings.subURI : "";
+    return settings.subEnable === true && base ? base : undefined;
   }
 
   async attachClient(email: string, inboundId: number): Promise<void> {

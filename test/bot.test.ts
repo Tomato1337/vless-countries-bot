@@ -18,6 +18,7 @@ describe("Telegram bot UI", () => {
       "Sync",
       "Help",
       "Trusted users",
+      "Add user",
     ]);
   });
 
@@ -67,11 +68,28 @@ describe("Telegram bot UI", () => {
     expect(buttonTexts(calls.at(-1)?.payload)).toContain("⏮");
     expect(buttonTexts(calls.at(-1)?.payload)).not.toContain("⏭");
   });
+
+  test("lets only the owner create users; trusted admins keep country management", async () => {
+    const { bot, calls, store, xui } = setupBot();
+    store.addTrustedUser(2);
+
+    await bot.handleUpdate(messageUpdate("/start", "private", 2));
+    expect(buttonTexts(calls.at(-1)?.payload)).toContain("Add NordVPN region");
+    expect(buttonTexts(calls.at(-1)?.payload)).not.toContain("Add user");
+    await bot.handleUpdate(messageUpdate("/adduser petya", "private", 2));
+    expect((calls.at(-1)?.payload as { text?: string }).text).toBe("Команда доступна только владельцу.");
+    expect(xui.created).toEqual([]);
+
+    await bot.handleUpdate(messageUpdate("/adduser petya"));
+    expect(xui.created.map((client) => client.email)).toEqual(["petya-pc", "petya-phone", "petya-russia"]);
+    expect((calls.at(-1)?.payload as { text?: string }).text).toContain("Подписка: https://sub.test:2096/sub/petya");
+  });
 });
 
 function setupBot() {
   const store = new Store();
-  const service = new CountryService(store, new MockXui(), { geOutboundTag: "germany", inboundId: 1 });
+  const xui = new MockXui();
+  const service = new CountryService(store, xui, { geOutboundTag: "germany", inboundId: 1 });
   const bot = createBot({ token: "123:secret", ownerId: 1 }, store, service);
   const calls: Array<{ method: string; payload: unknown }> = [];
   bot.botInfo = {
@@ -92,7 +110,7 @@ function setupBot() {
     calls.push({ method, payload });
     return { ok: true, result: apiResult(method, payload) } as never;
   });
-  return { bot, calls, store };
+  return { bot, calls, store, xui };
 }
 
 function apiResult(method: string, payload: unknown): unknown {
@@ -107,18 +125,18 @@ function apiResult(method: string, payload: unknown): unknown {
   return true;
 }
 
-function messageUpdate(text: string, chatType: "private" | "group" = "private") {
+function messageUpdate(text: string, chatType: "private" | "group" = "private", fromId = 1) {
   return {
     update_id: 1,
     message: {
       message_id: 1,
       date: 0,
       chat: chatType === "private"
-        ? { id: 1, type: "private" as const, first_name: "Owner" }
+        ? { id: fromId, type: "private" as const, first_name: "User" }
         : { id: -1, type: "group" as const, title: "Test" },
-      from: { id: 1, is_bot: false, first_name: "Owner" },
+      from: { id: fromId, is_bot: false, first_name: "User" },
       text,
-      entities: [{ type: "bot_command" as const, offset: 0, length: text.length }],
+      entities: [{ type: "bot_command" as const, offset: 0, length: text.split(" ", 1)[0]!.length }],
     },
   };
 }

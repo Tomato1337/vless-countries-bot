@@ -52,6 +52,19 @@ export interface NordVpnRepairResult {
   attemptedHostnames: string[];
 }
 
+export interface CreateUserResult extends SyncResult {
+  subId: string;
+  profiles: string[];
+  subscriptionUrl?: string;
+}
+
+// The panel's own routing rule (not managed by the bot) sends every `<subscription>-russia` profile to the
+// RU server's direct outbound.
+export const RUSSIA_ROUTE_USER = "regexp:.*-russia$";
+export const NEW_USER_DEVICES = ["pc", "phone", "russia"] as const;
+
+type BaseClient = Pick<ManagedClient, "email" | "subId" | "uuid">;
+
 export interface NordVpnCityOption {
   city: NordVpnCity;
   slug: string;
@@ -273,7 +286,9 @@ export class CountryService {
     return this.mutex.runExclusive(async () => {
       const created: ManagedClient[] = [];
       const renamed: RenamedClient[] = [];
+      const russia: BaseClient[] = [];
       try {
+        await this.ensureRussiaProfiles(russia);
         let skipped = 0;
         const attached: string[] = [];
         for (const vpnExit of this.store.listExits()) {
@@ -286,10 +301,10 @@ export class CountryService {
           "sync",
           null,
           true,
-          `created=${created.length}, renamed=${renamed.length}, attached=${attached.length}`,
+          `created=${created.length}, russia=${russia.length}, renamed=${renamed.length}, attached=${attached.length}`,
         );
         return {
-          created: created.map((client) => client.email),
+          created: [...russia, ...created].map((client) => client.email),
           renamed: renamed.map(({ after }) => after.email),
           attached,
           skipped,
@@ -297,10 +312,99 @@ export class CountryService {
       } catch (error) {
         await this.rollbackCreatedClients(created);
         await this.rollbackRenamedClients(renamed);
+        await this.rollbackBaseClients(russia);
         this.store.audit(actorId, "sync", null, false, safeMessage(error));
         throw error;
       }
     });
+  }
+
+  async createUser(actorId: number, name: string): Promise<CreateUserResult> {
+    return this.mutex.runExclusive(async () => {
+      const subId = name.trim().toLowerCase();
+      assertUserName(subId);
+      const clients = await this.xui.listClients();
+      if (clients.some((client) => subscriptionSlugOrUndefined(client.subId) === subId)) {
+        throw new Error(`Subscription already exists: ${subId}`);
+      }
+      const emails = new Set(clients.map((client) => client.email.toLowerCase()));
+      const profiles = NEW_USER_DEVICES.map((device) => `${subId}-${device}`);
+      const taken = profiles.find((email) => emails.has(email));
+      if (taken) {
+        throw new Error(`3x-ui client email already exists: ${taken}`);
+      }
+      assertRussiaRoute(await this.xui.getTemplate());
+      const subscriptionBase = await this.xui.getSubscriptionBaseUrl();
+
+      const base: BaseClient[] = [];
+      const created: ManagedClient[] = [];
+      const renamed: RenamedClient[] = [];
+      try {
+        for (const email of profiles) {
+          const client = { email, subId, uuid: crypto.randomUUID() };
+          await this.xui.createClient(client, this.config.inboundId);
+          base.push(client);
+        }
+        let skipped = 0;
+        const attached: string[] = [];
+        for (const vpnExit of this.store.listExits()) {
+          const result = await this.syncExit(vpnExit.slug, created, renamed);
+          skipped += result.skipped;
+          attached.push(...result.attached);
+        }
+        this.store.audit(actorId, "user-add", subId, true, `profiles=${base.length}, exits=${created.length}`);
+        return {
+          subId,
+          profiles,
+          created: created.map((client) => client.email),
+          renamed: renamed.map(({ after }) => after.email),
+          attached,
+          skipped,
+          ...(subscriptionBase ? { subscriptionUrl: `${subscriptionBase}${encodeURIComponent(subId)}` } : {}),
+        };
+      } catch (error) {
+        await this.rollbackCreatedClients(created);
+        await this.rollbackRenamedClients(renamed);
+        await this.rollbackBaseClients(base);
+        this.store.audit(actorId, "user-add", subId, false, safeMessage(error));
+        throw error;
+      }
+    });
+  }
+
+  private async ensureRussiaProfiles(created: BaseClient[]): Promise<void> {
+    const clients = await this.xui.listClients();
+    const byEmail = new Map(clients.map((client) => [client.email.toLowerCase(), client]));
+    const missing: BaseClient[] = [];
+    for (const subscription of collectSubscriptions(clients, this.config.inboundId)) {
+      const email = `${subscription.slug}-russia`;
+      const existing = byEmail.get(email);
+      if (existing) {
+        if (existing.subId !== subscription.subId) {
+          throw new Error(`Russia profile ${email} belongs to another subscription: ${JSON.stringify(existing.subId)}`);
+        }
+        continue;
+      }
+      missing.push({ email, subId: subscription.subId, uuid: crypto.randomUUID() });
+    }
+    if (!missing.length) {
+      return;
+    }
+    assertRussiaRoute(await this.xui.getTemplate());
+    for (const client of missing) {
+      await this.xui.createClient(client, this.config.inboundId);
+      created.push(client);
+    }
+  }
+
+  private async rollbackBaseClients(created: BaseClient[]): Promise<void> {
+    for (const client of [...created].reverse()) {
+      try {
+        await this.xui.deleteClient(client);
+      } catch {
+        // Keep the original error; a leftover profile is visible in the panel.
+      }
+    }
   }
 
   async removeCountry(actorId: number, slug: string): Promise<number> {
@@ -527,6 +631,31 @@ export class CountryService {
 interface RenamedClient {
   before: ManagedClient;
   after: ManagedClient;
+}
+
+function assertUserName(name: string): void {
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name) || name.length > 32) {
+    throw new Error("Имя пользователя: латиница в нижнем регистре, цифры и одиночные дефисы, до 32 символов");
+  }
+}
+
+function subscriptionSlugOrUndefined(subId: string): string | undefined {
+  try {
+    return normalizeSubscriptionSlug(subId);
+  } catch {
+    return undefined;
+  }
+}
+
+function assertRussiaRoute(template: XrayTemplate): void {
+  const rule = template.routing.rules.find((item) =>
+    item.enabled !== false && Array.isArray(item.user) && item.user.includes(RUSSIA_ROUTE_USER)
+  );
+  if (!rule?.outboundTag || !template.outbounds.some((outbound) => outbound.tag === rule.outboundTag)) {
+    throw new Error(
+      `3x-ui routing has no enabled rule user=${RUSSIA_ROUTE_USER} with an existing outbound; russia profiles would use the default route`,
+    );
+  }
 }
 
 export function assertCountrySlug(slug: string): void {
