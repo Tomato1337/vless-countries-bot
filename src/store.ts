@@ -104,10 +104,27 @@ export class Store {
         expires_at TEXT NOT NULL,
         PRIMARY KEY (chat_id, user_id)
       );
+      CREATE TABLE IF NOT EXISTS nordvpn_server_selections (
+        country_id INTEGER NOT NULL,
+        city_id INTEGER NOT NULL,
+        hostname TEXT NOT NULL,
+        selected_at TEXT NOT NULL,
+        PRIMARY KEY (country_id, city_id, hostname)
+      );
     `);
     if (version < 2) {
       this.copyLegacyData();
       this.db.exec("PRAGMA user_version = 2;");
+    }
+    if (version < 3) {
+      // Servers chosen before selections were tracked: the exit's last update is the best known choice time.
+      this.db.exec(`
+        INSERT OR IGNORE INTO nordvpn_server_selections (country_id, city_id, hostname, selected_at)
+        SELECT json_extract(source_json, '$.countryId'), json_extract(source_json, '$.cityId'),
+          json_extract(source_json, '$.hostname'), updated_at
+        FROM exits WHERE provider = 'nordvpn';
+        PRAGMA user_version = 3;
+      `);
     }
   }
 
@@ -213,6 +230,22 @@ export class Store {
 
   deleteExit(slug: string): void {
     this.db.query("DELETE FROM exits WHERE slug = ?").run(slug);
+  }
+
+  markNordVpnServerSelected(source: NordVpnSource): void {
+    this.db.query(`
+      INSERT INTO nordvpn_server_selections (country_id, city_id, hostname, selected_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(country_id, city_id, hostname) DO UPDATE SET selected_at = excluded.selected_at
+    `).run(source.countryId, source.cityId, source.hostname, new Date().toISOString());
+  }
+
+  /** Last selection time (ISO) per hostname within one NordVPN country and city. */
+  listNordVpnServerSelections(countryId: number, cityId: number): Map<string, string> {
+    const rows = this.db.query<{ hostname: string; selected_at: string }, [number, number]>(
+      "SELECT hostname, selected_at FROM nordvpn_server_selections WHERE country_id = ? AND city_id = ?",
+    ).all(countryId, cityId);
+    return new Map(rows.map((row) => [row.hostname, row.selected_at]));
   }
 
   addManagedClient(client: ManagedClient): void {

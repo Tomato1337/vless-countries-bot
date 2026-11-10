@@ -1,10 +1,11 @@
 import { Bot, InlineKeyboard } from "grammy";
 import type { Context } from "grammy";
 import { countryFlagFromSlug } from "./country-flag.ts";
-import { assertCountrySlug, CountryService } from "./country-service.ts";
+import { assertCountrySlug, CountryService, isProtectedExit } from "./country-service.ts";
 import type { NordVpnCityOption, SyncResult } from "./country-service.ts";
 import { safeMessage } from "./sanitize.ts";
 import { Store } from "./store.ts";
+import type { NordVpnServer } from "./nordvpn.ts";
 import type { JsonObject, NordVpnSource, VpnExit } from "./types.ts";
 
 interface BotConfig {
@@ -14,6 +15,14 @@ interface BotConfig {
 
 const PAGE_SIZE = 8;
 const WIZARD_TTL_MS = 15 * 60 * 1000;
+const SELECTED_AT_FORMAT = new Intl.DateTimeFormat("ru-RU", {
+  timeZone: "Europe/Moscow",
+  day: "2-digit",
+  month: "2-digit",
+  year: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+});
 
 export function createBot(config: BotConfig, store: Store, service: CountryService): Bot {
   const bot = new Bot(config.token);
@@ -131,7 +140,7 @@ export function createBot(config: BotConfig, store: Store, service: CountryServi
 
   bot.callbackQuery(/^x:v:(\d+)$/, auth(async (ctx) => {
     await answer(ctx);
-    await showExitCard(ctx, requireExit(service, callbackNumber(ctx, 1)));
+    await showExitCard(ctx, service, requireExit(service, callbackNumber(ctx, 1)));
   }));
   bot.callbackQuery(/^x:replace:(\d+)$/, auth(async (ctx) => {
     await answer(ctx);
@@ -167,13 +176,13 @@ export function createBot(config: BotConfig, store: Store, service: CountryServi
     const cityId = callbackNumber(ctx, 2);
     const existing = service.findNordVpnExit(countryId, cityId);
     if (existing) {
-      await showExitCard(ctx, existing);
+      await showExitCard(ctx, service, existing);
       return;
     }
     const options = await service.listNordVpnCityOptions(countryId);
     const option = requireCityOption(options, cityId);
     if (option.existing) {
-      await showExitCard(ctx, option.existing);
+      await showExitCard(ctx, service, option.existing);
       return;
     }
     await render(
@@ -194,7 +203,7 @@ export function createBot(config: BotConfig, store: Store, service: CountryServi
     try {
       const result = await service.addNordVpnRegion(ctx.from!.id, countryId, cityId);
       await ctx.reply(`Добавлен ${result.slug}: ${result.source.hostname}. Новых профилей: ${result.created.length}.`);
-      await showExitCard(ctx, requireExitBySlug(service, result.slug));
+      await showExitCard(ctx, service, requireExitBySlug(service, result.slug));
     } catch (error) {
       await ctx.reply(`Автоподбор не применил конфиг: ${safeMessage(error)}`);
       await showNordServers(ctx, service, countryId, cityId);
@@ -219,7 +228,7 @@ export function createBot(config: BotConfig, store: Store, service: CountryServi
     try {
       const result = await service.addNordVpnRegion(ctx.from!.id, countryId, cityId, serverId);
       await ctx.reply(`Добавлен ${result.slug}: ${result.source.hostname}. Новых профилей: ${result.created.length}.`);
-      await showExitCard(ctx, requireExitBySlug(service, result.slug));
+      await showExitCard(ctx, service, requireExitBySlug(service, result.slug));
     } catch (error) {
       await ctx.reply(`Сервер не применён: ${safeMessage(error)}`);
       await showNordServers(ctx, service, countryId, cityId);
@@ -232,7 +241,7 @@ export function createBot(config: BotConfig, store: Store, service: CountryServi
     try {
       const result = await service.repairNordVpnRegion(ctx.from!.id, vpnExit.slug);
       await ctx.reply(`Регион ${result.slug} обновлён: ${result.source.hostname}.`);
-      await showExitCard(ctx, requireExitBySlug(service, result.slug));
+      await showExitCard(ctx, service, requireExitBySlug(service, result.slug));
     } catch (error) {
       await ctx.reply(`Repair не применил конфиг: ${safeMessage(error)}`);
       await showRepairServers(ctx, service, vpnExit);
@@ -249,7 +258,7 @@ export function createBot(config: BotConfig, store: Store, service: CountryServi
     try {
       const result = await service.repairNordVpnRegion(ctx.from!.id, vpnExit.slug, callbackNumber(ctx, 2));
       await ctx.reply(`Регион ${result.slug} обновлён: ${result.source.hostname}.`);
-      await showExitCard(ctx, requireExitBySlug(service, result.slug));
+      await showExitCard(ctx, service, requireExitBySlug(service, result.slug));
     } catch (error) {
       await ctx.reply(`Сервер не применён: ${safeMessage(error)}`);
       await showRepairServers(ctx, service, vpnExit);
@@ -411,22 +420,36 @@ async function showExits(ctx: Context, service: CountryService, page = 0, query 
   await render(ctx, lines.join("\n"), keyboard);
 }
 
-async function showExitCard(ctx: Context, vpnExit: VpnExit): Promise<void> {
+async function showExitCard(ctx: Context, service: CountryService, vpnExit: VpnExit): Promise<void> {
   const keyboard = new InlineKeyboard();
+  const removable = !isProtectedExit(vpnExit.slug);
   let text = `${flag(vpnExit.slug)} ${vpnExit.slug}\nProvider: ${vpnExit.provider}`;
   if (vpnExit.provider === "manual-vless") {
-    keyboard.text("Replace URI", `x:replace:${vpnExit.id}`).text("Remove", `x:rm:${vpnExit.id}`);
+    keyboard.text("Replace URI", `x:replace:${vpnExit.id}`);
   } else {
     const source = vpnExit.source as NordVpnSource;
+    const selectedAt = service.nordVpnServerSelections(source.countryId, source.cityId).get(source.hostname);
     text += `\nCountry: ${source.countryName}\nCity: ${source.cityName}\nServer: ${source.hostname}\nLoad: ${source.load}%`;
+    if (selectedAt) {
+      text += `\nSelected: ${SELECTED_AT_FORMAT.format(new Date(selectedAt))} МСК`;
+    }
     keyboard
       .text("Repair automatically", `n:repair:${vpnExit.id}`)
       .row()
-      .text("Choose server", `n:rs:${vpnExit.id}:0`)
-      .text("Remove", `x:rm:${vpnExit.id}`);
+      .text("Choose server", `n:rs:${vpnExit.id}:0`);
+  }
+  if (removable) {
+    keyboard.text("Remove", `x:rm:${vpnExit.id}`);
+  } else {
+    text += "\n🔒 Защищён от удаления: на этот exit перенаправляется torrent-трафик.";
   }
   keyboard.row().text("Назад к exits", "m:exits:0").text("Главное меню", "m:home");
   await render(ctx, text, keyboard);
+}
+
+function serverLabel(server: NordVpnServer, selections: Map<string, string>, marker = ""): string {
+  const selectedAt = selections.get(server.hostname);
+  return `${marker}${server.hostname} · ${server.load}%${selectedAt ? ` · 🕓 ${SELECTED_AT_FORMAT.format(new Date(selectedAt))}` : ""}`;
 }
 
 async function showNordCountries(ctx: Context, service: CountryService, page = 0, query = ""): Promise<void> {
@@ -477,14 +500,19 @@ async function showNordServers(
   page = 0,
 ): Promise<void> {
   const servers = await service.listNordVpnServers(countryId, cityId);
+  const selections = service.nordVpnServerSelections(countryId, cityId);
   const { items, currentPage, pages } = paginate(servers, page);
   const keyboard = new InlineKeyboard();
   for (const server of items) {
-    keyboard.text(`${server.hostname} · ${server.load}%`, `n:pick:${countryId}:${cityId}:${server.id}`).row();
+    keyboard.text(serverLabel(server, selections), `n:pick:${countryId}:${cityId}:${server.id}`).row();
   }
   addPager(keyboard, `n:s:${countryId}:${cityId}`, currentPage, pages);
   keyboard.text("Назад", `n:city:${countryId}:${cityId}`).text("Главное меню", "m:home");
-  await render(ctx, "Выберите NordVPN hostname. Перед добавлением он будет протестирован.", keyboard);
+  await render(
+    ctx,
+    "Выберите NordVPN hostname. Перед добавлением он будет протестирован. 🕓 последний выбор (МСК).",
+    keyboard,
+  );
 }
 
 async function showRepairServers(
@@ -498,15 +526,20 @@ async function showRepairServers(
   }
   const source = vpnExit.source as NordVpnSource;
   const servers = await service.listNordVpnServers(source.countryId, source.cityId, true);
+  const selections = service.nordVpnServerSelections(source.countryId, source.cityId);
   const { items, currentPage, pages } = paginate(servers, page);
   const keyboard = new InlineKeyboard();
   for (const server of items) {
     const marker = server.hostname === source.hostname ? "✅ " : "";
-    keyboard.text(`${marker}${server.hostname} · ${server.load}%`, `n:rp:${vpnExit.id}:${server.id}`).row();
+    keyboard.text(serverLabel(server, selections, marker), `n:rp:${vpnExit.id}:${server.id}`).row();
   }
   addPager(keyboard, `n:rs:${vpnExit.id}`, currentPage, pages);
   keyboard.text("Назад", `x:v:${vpnExit.id}`).text("Главное меню", "m:home");
-  await render(ctx, `Выберите новый hostname для ${vpnExit.slug}. ✅ текущий сервер.`, keyboard);
+  await render(
+    ctx,
+    `Выберите новый hostname для ${vpnExit.slug}. ✅ текущий сервер, 🕓 последний выбор (МСК).`,
+    keyboard,
+  );
 }
 
 async function showTrusted(ctx: Context, store: Store): Promise<void> {
@@ -539,6 +572,9 @@ async function applyManualExit(ctx: Context, service: CountryService, slug: stri
 }
 
 async function confirmRemove(ctx: Context, vpnExit: VpnExit): Promise<void> {
+  if (isProtectedExit(vpnExit.slug)) {
+    throw new Error(`Exit ${vpnExit.slug} is protected and cannot be removed: torrent traffic is redirected to it`);
+  }
   await render(
     ctx,
     `Удалить ${vpnExit.slug}?\nProvider: ${vpnExit.provider}\nБудут удалены только управляемые ботом профили этого exit.`,

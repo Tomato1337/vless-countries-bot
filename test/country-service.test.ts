@@ -289,6 +289,28 @@ describe("CountryService NordVPN", () => {
     expect(store.listManagedClients()).toEqual([]);
     expect(xui.template).toEqual(template);
   });
+
+  test("records the last selection time per hostname when the server changes", async () => {
+    const { service } = setupNord();
+
+    await service.addNordVpnRegion(1, 1, 100, 1);
+    const first = service.nordVpnServerSelections(1, 100).get("us-low.nordvpn.com");
+    expect(first).toBeDefined();
+
+    await service.repairNordVpnRegion(1, "us-chicago", 2);
+    const selections = service.nordVpnServerSelections(1, 100);
+    expect(selections.get("us-low.nordvpn.com")).toBe(first!);
+    expect(Date.parse(selections.get("us-backup.nordvpn.com")!)).toBeGreaterThanOrEqual(Date.parse(first!));
+    expect(service.nordVpnServerSelections(1, 101).size).toBe(0);
+  });
+
+  test("refuses to remove the torrent-redirect exit", async () => {
+    const { store, service } = setup();
+    await service.setCountry(1, "ch-zurich", REALITY_URI);
+
+    await expect(service.removeCountry(1, "ch-zurich")).rejects.toThrow("protected");
+    expect(store.getExit("ch-zurich")).toBeDefined();
+  });
 });
 
 class MockNordCatalog extends NordVpnCatalog {

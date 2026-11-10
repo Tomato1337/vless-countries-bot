@@ -63,6 +63,13 @@ export interface CreateUserResult extends SyncResult {
 export const RUSSIA_ROUTE_USER = "regexp:.*-russia$";
 export const NEW_USER_DEVICES = ["pc", "phone", "russia"] as const;
 
+// Panel routing redirects torrent traffic to this exit's outbound; removing it would break that redirect.
+const PROTECTED_EXITS: Record<string, true> = { "ch-zurich": true };
+
+export function isProtectedExit(slug: string): boolean {
+  return Object.hasOwn(PROTECTED_EXITS, slug);
+}
+
 type BaseClient = Pick<ManagedClient, "email" | "subId" | "uuid">;
 
 export interface NordVpnCityOption {
@@ -143,6 +150,11 @@ export class CountryService {
     this.requireNordVpnPrivateKey();
     const servers = await this.nordCatalog.listServers(countryId, force);
     return cityId === undefined ? servers : servers.filter((server) => server.cityId === cityId);
+  }
+
+  /** Last selection time (ISO) per hostname for one NordVPN country and city. */
+  nordVpnServerSelections(countryId: number, cityId: number): Map<string, string> {
+    return this.store.listNordVpnServerSelections(countryId, cityId);
   }
 
   async setCountry(actorId: number, slug: string, uri: string): Promise<SetCountryResult> {
@@ -232,6 +244,7 @@ export class CountryService {
         templateApplied = true;
         this.store.upsertNordVpnExit(slug, chosen.source, chosen.outbound);
         const sync = await this.syncExit(slug, created, renamed);
+        this.store.markNordVpnServerSelected(chosen.source);
         this.store.audit(actorId, "nord-add", slug, true, `hostname=${chosen.source.hostname}`);
         return { slug, source: chosen.source, attemptedHostnames: chosen.attemptedHostnames, ...sync };
       } catch (error) {
@@ -271,6 +284,7 @@ export class CountryService {
       try {
         await this.xui.updateTemplate(chosen.template);
         this.store.upsertNordVpnExit(slug, chosen.source, chosen.outbound);
+        this.store.markNordVpnServerSelected(chosen.source);
         this.store.audit(actorId, "nord-repair", slug, true, `hostname=${chosen.source.hostname}`);
         return { slug, source: chosen.source, attemptedHostnames: chosen.attemptedHostnames };
       } catch (error) {
@@ -410,6 +424,9 @@ export class CountryService {
   async removeCountry(actorId: number, slug: string): Promise<number> {
     return this.mutex.runExclusive(async () => {
       assertCountrySlug(slug);
+      if (isProtectedExit(slug)) {
+        throw new Error(`Exit ${slug} is protected and cannot be removed: torrent traffic is redirected to it`);
+      }
       const vpnExit = this.store.getExit(slug);
       if (!vpnExit) {
         throw new Error(`Exit does not exist: ${slug}`);
