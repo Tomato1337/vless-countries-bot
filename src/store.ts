@@ -7,6 +7,8 @@ import type {
   ManagedClient,
   ManualVlessSource,
   NordVpnSource,
+  ProxyRecord,
+  TelegramUserInfo,
   VpnExit,
   WizardSession,
   XrayOutbound,
@@ -37,6 +39,28 @@ interface WizardSessionRow {
   step: string;
   payload_json: string;
   expires_at: string;
+}
+
+interface ProxyRow {
+  id: number;
+  sub_id: string;
+  name: string;
+  provider: ProxyRecord["provider"];
+  source_json: string;
+  upstream_json: string | null;
+  outbound_json: string;
+  email: string;
+  uuid: string;
+  created_by: number;
+  created_at: string;
+}
+
+interface TelegramUserRow {
+  telegram_id: number;
+  first_name: string | null;
+  last_name: string | null;
+  username: string | null;
+  profile_sub_id: string | null;
 }
 
 export class Store {
@@ -110,6 +134,33 @@ export class Store {
         hostname TEXT NOT NULL,
         selected_at TEXT NOT NULL,
         PRIMARY KEY (country_id, city_id, hostname)
+      );
+      CREATE TABLE IF NOT EXISTS telegram_users (
+        telegram_id INTEGER PRIMARY KEY,
+        first_name TEXT,
+        last_name TEXT,
+        username TEXT,
+        profile_sub_id TEXT,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS subscription_settings (
+        sub_id TEXT PRIMARY KEY,
+        urnetwork_api_key TEXT,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS proxies (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        sub_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        source_json TEXT NOT NULL,
+        upstream_json TEXT,
+        outbound_json TEXT NOT NULL,
+        email TEXT NOT NULL UNIQUE,
+        uuid TEXT NOT NULL,
+        created_by INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE (sub_id, name)
       );
     `);
     if (version < 2) {
@@ -289,7 +340,10 @@ export class Store {
   }
 
   deleteTrustedUser(telegramId: number): void {
-    this.db.query("DELETE FROM trusted_users WHERE telegram_id = ?").run(telegramId);
+    this.db.transaction(() => {
+      this.db.query("DELETE FROM trusted_users WHERE telegram_id = ?").run(telegramId);
+      this.db.query("UPDATE telegram_users SET profile_sub_id = NULL WHERE telegram_id = ?").run(telegramId);
+    })();
   }
 
   isTrustedUser(telegramId: number): boolean {
@@ -302,6 +356,106 @@ export class Store {
     return this.db.query<{ telegram_id: number }, []>(
       "SELECT telegram_id FROM trusted_users ORDER BY telegram_id",
     ).all().map((row) => row.telegram_id);
+  }
+
+  /** Refreshes the Telegram name and @username; keeps the owner-assigned profile binding. */
+  rememberTelegramUser(user: Omit<TelegramUserInfo, "profileSubId">): void {
+    this.db.query(`
+      INSERT INTO telegram_users (telegram_id, first_name, last_name, username, updated_at)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(telegram_id) DO UPDATE SET
+        first_name = excluded.first_name,
+        last_name = excluded.last_name,
+        username = excluded.username,
+        updated_at = excluded.updated_at
+    `).run(
+      user.telegramId,
+      user.firstName ?? null,
+      user.lastName ?? null,
+      user.username ?? null,
+      new Date().toISOString(),
+    );
+  }
+
+  getTelegramUser(telegramId: number): TelegramUserInfo | undefined {
+    const row = this.db.query<TelegramUserRow, [number]>(
+      "SELECT * FROM telegram_users WHERE telegram_id = ?",
+    ).get(telegramId);
+    return row ? telegramUserFromRow(row) : undefined;
+  }
+
+  listTelegramUsersByProfile(subId: string): TelegramUserInfo[] {
+    return this.db.query<TelegramUserRow, [string]>(
+      "SELECT * FROM telegram_users WHERE profile_sub_id = ? ORDER BY telegram_id",
+    ).all(subId).map(telegramUserFromRow);
+  }
+
+  setProfileBinding(telegramId: number, subId: string | undefined): void {
+    this.db.query(`
+      INSERT INTO telegram_users (telegram_id, profile_sub_id, updated_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(telegram_id) DO UPDATE SET profile_sub_id = excluded.profile_sub_id
+    `).run(telegramId, subId ?? null, new Date().toISOString());
+  }
+
+  getUrnetworkKey(subId: string): string | undefined {
+    return this.db.query<{ urnetwork_api_key: string | null }, [string]>(
+      "SELECT urnetwork_api_key FROM subscription_settings WHERE sub_id = ?",
+    ).get(subId)?.urnetwork_api_key ?? undefined;
+  }
+
+  setUrnetworkKey(subId: string, apiKey: string | undefined): void {
+    this.db.query(`
+      INSERT INTO subscription_settings (sub_id, urnetwork_api_key, updated_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(sub_id) DO UPDATE SET
+        urnetwork_api_key = excluded.urnetwork_api_key,
+        updated_at = excluded.updated_at
+    `).run(subId, apiKey ?? null, new Date().toISOString());
+  }
+
+  addProxy(record: Omit<ProxyRecord, "id" | "createdAt">): ProxyRecord {
+    const row = this.db.query<ProxyRow, [string, string, string, string, string | null, string, string, string, number, string]>(`
+      INSERT INTO proxies
+        (sub_id, name, provider, source_json, upstream_json, outbound_json, email, uuid, created_by, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      RETURNING *
+    `).get(
+      record.subId,
+      record.name,
+      record.provider,
+      JSON.stringify(record.source),
+      record.upstream ? JSON.stringify(record.upstream) : null,
+      JSON.stringify(record.outbound),
+      record.email,
+      record.uuid,
+      record.createdBy,
+      new Date().toISOString(),
+    );
+    return proxyFromRow(row!);
+  }
+
+  getProxy(id: number): ProxyRecord | undefined {
+    const row = this.db.query<ProxyRow, [number]>("SELECT * FROM proxies WHERE id = ?").get(id);
+    return row ? proxyFromRow(row) : undefined;
+  }
+
+  listProxies(subId?: string): ProxyRecord[] {
+    const rows = subId === undefined
+      ? this.db.query<ProxyRow, []>("SELECT * FROM proxies ORDER BY name, sub_id").all()
+      : this.db.query<ProxyRow, [string]>("SELECT * FROM proxies WHERE sub_id = ? ORDER BY name").all(subId);
+    return rows.map(proxyFromRow);
+  }
+
+  deleteProxy(id: number): void {
+    this.db.query("DELETE FROM proxies WHERE id = ?").run(id);
+  }
+
+  listUrnetworkKeys(): Map<string, string> {
+    const rows = this.db.query<{ sub_id: string; urnetwork_api_key: string }, []>(
+      "SELECT sub_id, urnetwork_api_key FROM subscription_settings WHERE urnetwork_api_key IS NOT NULL ORDER BY sub_id",
+    ).all();
+    return new Map(rows.map((row) => [row.sub_id, row.urnetwork_api_key]));
   }
 
   backupTemplate(reason: string, template: XrayTemplate, nordVpnPrivateKey?: string): void {
@@ -437,6 +591,32 @@ function managedClientFromRow(row: ManagedClientRow): ManagedClient {
     email: row.email,
     subId: row.sub_id,
     uuid: row.uuid,
+  };
+}
+
+function proxyFromRow(row: ProxyRow): ProxyRecord {
+  return {
+    id: row.id,
+    subId: row.sub_id,
+    name: row.name,
+    provider: row.provider,
+    source: JSON.parse(row.source_json) as ProxyRecord["source"],
+    ...(row.upstream_json ? { upstream: JSON.parse(row.upstream_json) as ProxyRecord["upstream"] } : {}),
+    outbound: JSON.parse(row.outbound_json) as XrayOutbound,
+    email: row.email,
+    uuid: row.uuid,
+    createdBy: row.created_by,
+    createdAt: row.created_at,
+  };
+}
+
+function telegramUserFromRow(row: TelegramUserRow): TelegramUserInfo {
+  return {
+    telegramId: row.telegram_id,
+    ...(row.first_name ? { firstName: row.first_name } : {}),
+    ...(row.last_name ? { lastName: row.last_name } : {}),
+    ...(row.username ? { username: row.username } : {}),
+    ...(row.profile_sub_id ? { profileSubId: row.profile_sub_id } : {}),
   };
 }
 

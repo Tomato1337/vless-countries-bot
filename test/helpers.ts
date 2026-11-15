@@ -1,4 +1,14 @@
-import type { ManagedClient, OutboundTestResult, XrayOutbound, XrayTemplate, XuiApi, XuiClient } from "../src/types.ts";
+import type {
+  ManagedClient,
+  OutboundTestResult,
+  UrnetworkApi,
+  UrnetworkCountry,
+  UrnetworkUpstream,
+  XrayOutbound,
+  XrayTemplate,
+  XuiApi,
+  XuiClient,
+} from "../src/types.ts";
 
 type BaseClient = Pick<ManagedClient, "email" | "subId" | "uuid">;
 
@@ -64,8 +74,18 @@ export class MockXui implements XuiApi {
 
   async testOutbound(outbound: XrayOutbound): Promise<OutboundTestResult> {
     this.tested.push(structuredClone(outbound));
-    const settings = outbound.settings as { peers?: Array<{ endpoint?: string }> } | undefined;
-    const endpoint = settings?.peers?.[0]?.endpoint ?? "";
+    const settings = outbound.settings as {
+      peers?: Array<{ endpoint?: string }>;
+      servers?: Array<{ address?: string }>;
+      address?: string;
+    } | undefined;
+    // Mirrors 3x-ui extractOutboundEndpoints: http/socks endpoints come only from settings.servers[].
+    const endpoint = ["http", "socks"].includes(outbound.protocol)
+      ? settings?.servers?.[0]?.address ?? ""
+      : settings?.peers?.[0]?.endpoint ?? settings?.address ?? "";
+    if (!endpoint) {
+      throw new Error("No testable endpoint");
+    }
     if ([...this.failTestHostnames].some((hostname) => endpoint.startsWith(hostname))) {
       throw new Error("outbound test failed");
     }
@@ -109,5 +129,49 @@ export class MockXui implements XuiApi {
       throw new Error("rename failed");
     }
     existing.email = nextEmail;
+  }
+}
+
+export class MockUrnetwork implements UrnetworkApi {
+  countries: UrnetworkCountry[] = [
+    { code: "de", name: "Germany", providerCount: 100 },
+    { code: "nl", name: "Netherlands", providerCount: 50 },
+  ];
+  created: Array<{ apiKey: string; location: string; uniqueExit: boolean; clientId: string }> = [];
+  removed: string[] = [];
+  exchangedCodes: string[] = [];
+  invalidKeys = new Set<string>();
+  private nextClient = 1;
+
+  async listCountries(): Promise<UrnetworkCountry[]> {
+    return structuredClone(this.countries);
+  }
+
+  async createApiKey(authCode: string): Promise<string> {
+    this.exchangedCodes.push(authCode);
+    return `urn_from_${authCode}`;
+  }
+
+  async verifyApiKey(apiKey: string): Promise<void> {
+    if (this.invalidKeys.has(apiKey)) {
+      throw new Error("URnetwork rejected the API key (HTTP 401)");
+    }
+  }
+
+  async createProxy(apiKey: string, options: { location: string; uniqueExit: boolean }): Promise<UrnetworkUpstream> {
+    const clientId = `client-${this.nextClient++}`;
+    this.created.push({ apiKey, ...options, clientId });
+    return {
+      clientId,
+      authToken: `token${clientId.replace("-", "")}`,
+      proxyHost: "proxy.ur.test",
+      httpsProxyPort: 8443,
+      socksProxyPort: 8080,
+      ...(options.uniqueExit ? { exitLocation: "Berlin, DE" } : {}),
+    };
+  }
+
+  async removeProxy(_apiKey: string, clientId: string): Promise<void> {
+    this.removed.push(clientId);
   }
 }

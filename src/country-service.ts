@@ -8,6 +8,7 @@ import {
   nordVpnRegionSlug,
 } from "./nordvpn.ts";
 import type { NordVpnCity, NordVpnCountry, NordVpnServer } from "./nordvpn.ts";
+import { PROXY_EMAIL_SUFFIX } from "./proxy.ts";
 import { safeMessage } from "./sanitize.ts";
 import { Store } from "./store.ts";
 import { assertGeOutbound, removeExit, upsertExit } from "./template.ts";
@@ -79,7 +80,7 @@ export interface NordVpnCityOption {
 }
 
 export class CountryService {
-  private readonly mutex = new Mutex();
+  readonly mutex = new Mutex();
 
   constructor(
     private readonly store: Store,
@@ -678,6 +679,9 @@ function assertRussiaRoute(template: XrayTemplate): void {
 export function assertCountrySlug(slug: string): void {
   if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)) {
     throw new Error("Exit slug must contain lowercase letters, digits and single hyphens");
+  }
+  if (slug.endsWith(PROXY_EMAIL_SUFFIX)) {
+    throw new Error(`Exit slug must not end with ${PROXY_EMAIL_SUFFIX}: that suffix marks proxy profiles`);
   }
 }
 

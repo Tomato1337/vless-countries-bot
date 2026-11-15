@@ -76,6 +76,80 @@ export interface WizardSession {
   expiresAt: string;
 }
 
+export type ProxyProvider = "urnetwork" | "custom";
+
+/** HTTPS works on every URnetwork plan; SOCKS5 needs UR Pro. */
+export type UrnetworkProxyKind = "https" | "socks";
+
+/** Where a URnetwork proxy exits: one country, or `best` for any provider on the network. */
+export type UrnetworkLocation = string;
+export const URNETWORK_BEST_AVAILABLE = "best";
+
+export interface UrnetworkProxySource extends JsonObject {
+  /** ISO-2 code in lower case, or `best`. */
+  countryCode: UrnetworkLocation;
+  countryName: string;
+  kind: UrnetworkProxyKind;
+  /** UR Pro: the proxy gets an exit IP that none of the account's other unique-exit proxies use. */
+  uniqueExit?: boolean;
+}
+
+export interface CustomProxySource extends JsonObject {
+  url: string;
+}
+
+/** A hosted proxy created on the subscription owner's URnetwork account. */
+export interface UrnetworkUpstream extends JsonObject {
+  clientId: string;
+  authToken: string;
+  proxyHost: string;
+  httpsProxyPort: number;
+  socksProxyPort: number;
+  /** Unique-exit proxies only: where URnetwork placed the exit, e.g. "Berlin, DE". */
+  exitLocation?: string;
+}
+
+export interface ProxyRecord {
+  id: number;
+  subId: string;
+  name: string;
+  provider: ProxyProvider;
+  source: UrnetworkProxySource | CustomProxySource;
+  upstream?: UrnetworkUpstream;
+  outbound: XrayOutbound;
+  email: string;
+  uuid: string;
+  createdBy: number;
+  createdAt: string;
+}
+
+export interface TelegramUserInfo {
+  telegramId: number;
+  firstName?: string;
+  lastName?: string;
+  username?: string;
+  profileSubId?: string;
+}
+
+export interface UrnetworkCountry {
+  code: string;
+  name: string;
+  providerCount: number;
+}
+
+export interface UrnetworkApi {
+  listCountries(): Promise<UrnetworkCountry[]>;
+  /** Exchanges a one-time ur.io auth code for a long-lived `urn_` API key. */
+  createApiKey(authCode: string, name: string): Promise<string>;
+  verifyApiKey(apiKey: string): Promise<void>;
+  createProxy(
+    apiKey: string,
+    options: { location: UrnetworkLocation; uniqueExit: boolean },
+    description: string,
+  ): Promise<UrnetworkUpstream>;
+  removeProxy(apiKey: string, clientId: string): Promise<void>;
+}
+
 export interface XuiApi {
   checkCompatibility(geOutboundTag: string, inboundId: number): Promise<void>;
   getTemplate(): Promise<XrayTemplate>;

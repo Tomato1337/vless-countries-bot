@@ -1,8 +1,10 @@
 import { createBot } from "./src/bot.ts";
 import { loadConfig } from "./src/config.ts";
 import { CountryService } from "./src/country-service.ts";
+import { ProxyService } from "./src/proxy-service.ts";
 import { safeMessage } from "./src/sanitize.ts";
 import { Store } from "./src/store.ts";
+import { HttpUrnetworkClient } from "./src/urnetwork.ts";
 import { HttpXuiClient } from "./src/xui-client.ts";
 
 async function main(): Promise<void> {
@@ -29,10 +31,15 @@ async function main(): Promise<void> {
     if (nordError) {
       console.log(`NordVPN module disabled: ${nordError}`);
     }
+    const proxies = new ProxyService(store, xui, new HttpUrnetworkClient(), {
+      geOutboundTag: config.geOutboundTag,
+      inboundId: config.xuiInboundId,
+    }, service.mutex);
     const bot = createBot(
       { token: config.telegramBotToken, ownerId: config.telegramOwnerId },
       store,
       service,
+      proxies,
     );
     process.once("SIGINT", () => bot.stop());
     process.once("SIGTERM", () => bot.stop());
