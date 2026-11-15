@@ -16,6 +16,7 @@
 | `GE_OUTBOUND_TAG` | Да | `tag` существующего Germany outbound. |
 | `DATABASE_PATH` | Нет | SQLite path. Compose задаёт `/app/data/bot.sqlite`. |
 | `NORDVPN_PRIVATE_KEY` | Нет | Base64 private key NordLynx. |
+| `GE_IPV6_SLOTS_PATH` | Нет | Файл слотов IPv6 GE. По умолчанию `ge-ipv6-slots.json` рядом с базой. |
 
 Пример для Docker:
 
@@ -179,3 +180,41 @@ nl-free -> 🇳🇱
 ```
 
 Если страну нельзя определить, профиль не создаётся.
+
+## IPv6 GE для URnetwork
+
+ur.io видит адрес, с которого GE подключается к прокси-хосту. Чтобы разные
+аккаунты URnetwork не приходили с одного IP, у GE есть пул из 32 случайных
+IPv6 из `/48` (каждый в своей `/64`):
+
+```text
+клиент -> RU (outbound proxies-<профиль>--ur-*) -> ge-ipv6-slot-NN (копия GE outbound,
+  клиент GE ipv6-slot-NN) -> GE (правило user ipv6-slot-NN -> freedom sendThrough <IPv6>)
+  -> ur.io по IPv6 -> провайдер URnetwork -> сайт по IPv4 провайдера
+```
+
+- Профиль получает случайный свободный слот при первом прокси URnetwork и
+  сохраняет его навсегда (`ipv6_slot_bindings`), так что при пересоздании
+  прокси адрес не меняется. Адрес виден в карточке профиля.
+- Свои SOCKS5/HTTP(S) прокси и страны слоты не используют.
+- `/sync` перепривязывает все прокси URnetwork к слотам и обновляет копии GE
+  outbound после смены GE-ключей.
+- Без файла слотов прокси URnetwork идут через обычный `GE_OUTBOUND_TAG`.
+
+Настройка GE (один раз, идемпотентно):
+
+```bash
+GE_XUI_BASE_URL=https://ge-panel.example.com:8080/secret-panel-path GE_XUI_INBOUND_ID=4 \
+GE_IPV6_PREFIX=2001:db8:1234::/48 bun scripts/setup-ge-ipv6-slots.ts
+# файл data/ge-ipv6-slots.json -> data/ бота; затем на GE:
+install -m 755 deploy/ge-ipv6-slots.sh /usr/local/sbin/ge-ipv6-slots
+install -m 644 deploy/ge-ipv6-slots.service /etc/systemd/system/
+# в unit укажите SLOTS_FILE (путь к data/ge-ipv6-slots.json бота) и DEV (uplink)
+systemctl daemon-reload && systemctl enable --now ge-ipv6-slots
+```
+
+Скрипт создаёт клиентов `ipv6-slot-NN` в GE inbound и outbounds/rules
+`ipv6-slot-NN` в GE-template. Unit вешает адреса на uplink-интерфейс с
+`preferred_lft 0`: ядро не берёт их как source по умолчанию, Xray привязывает их
+явно. Файл слотов — источник истины: не пересоздавайте его при существующих
+GE-клиентах, иначе UUID разойдутся.

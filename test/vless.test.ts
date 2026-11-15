@@ -3,26 +3,26 @@ import { buildCountryOutbound, parseVlessRealityTcp, parseVlessUri } from "../sr
 import { REALITY_URI } from "./helpers.ts";
 
 const WS_URI =
-  "vless://a27f5e28-5d2f-11f1-ba20-52ac0074670e@premiusa3.vpnjantit.com:10002?encryption=none&security=tls&type=ws&path=%2fvpnjantit#fgdfgdf-vpnjantit.com";
+  "vless://00000000-0000-4000-8000-000000000002@ws.vless.example.com:10002?encryption=none&security=tls&type=ws&path=%2fws#ws-example";
 const XHTTP_URI =
-  "vless://a27f5e28-5d2f-11f1-ba20-52ac0074670e@example.com:443?encryption=none&security=tls&type=xhttp&host=cdn.example.com&path=%2Fapi&mode=stream-one&sni=origin.example.com&fp=chrome&alpn=h2%2Chttp%2F1.1&allowInsecure=0";
+  "vless://00000000-0000-4000-8000-000000000002@example.com:443?encryption=none&security=tls&type=xhttp&host=cdn.example.com&path=%2Fapi&mode=stream-one&sni=origin.example.com&fp=chrome&alpn=h2%2Chttp%2F1.1&allowInsecure=0";
 const GRPC_URI =
-  "vless://a27f5e28-5d2f-11f1-ba20-52ac0074670e@grpc.example.com:443?encryption=none&security=tls&type=grpc&serviceName=my-service&authority=cdn.example.com&mode=multi";
+  "vless://00000000-0000-4000-8000-000000000002@grpc.example.com:443?encryption=none&security=tls&type=grpc&serviceName=my-service&authority=cdn.example.com&mode=multi";
 
 describe("VLESS Reality TCP parser", () => {
   test("parses the supported share URI", () => {
     expect(parseVlessRealityTcp(REALITY_URI)).toMatchObject({
-      address: "usa12.vpnjantit.com",
+      address: "usa.vless.example.com",
       port: 443,
-      uuid: "74b0b096-5d02-11f1-a319-52cf4084cd34",
+      uuid: "00000000-0000-4000-8000-000000000001",
       encryption: "none",
       flow: "xtls-rprx-vision",
       transport: "tcp",
       security: "reality",
-      serverName: "cloudflare.com",
+      serverName: "www.example.com",
       fingerprint: "chrome",
-      publicKey: "g03nwLrMnwsZs7posvVRTelixQToNkNV2-QQCZa1Mjo",
-      shortId: "ea81553e93920d38",
+      publicKey: "ExampleRealityPublicKeyForUnitTests00000000",
+      shortId: "0123456789abcdef",
     });
   });
 
@@ -30,9 +30,9 @@ describe("VLESS Reality TCP parser", () => {
     const outbound = buildCountryOutbound("usa", REALITY_URI, "germany");
     expect(outbound.tag).toBe("countries-exit-usa");
     expect(outbound.settings).toEqual({
-      address: "usa12.vpnjantit.com",
+      address: "usa.vless.example.com",
       port: 443,
-      id: "74b0b096-5d02-11f1-a319-52cf4084cd34",
+      id: "00000000-0000-4000-8000-000000000001",
       encryption: "none",
       flow: "xtls-rprx-vision",
     });
@@ -51,8 +51,8 @@ describe("VLESS share URI transports", () => {
     expect(outbound.streamSettings).toEqual({
       network: "ws",
       security: "tls",
-      wsSettings: { path: "/vpnjantit" },
-      tlsSettings: { serverName: "premiusa3.vpnjantit.com" },
+      wsSettings: { path: "/ws" },
+      tlsSettings: { serverName: "ws.vless.example.com" },
       sockopt: { dialerProxy: "germany" },
     });
   });

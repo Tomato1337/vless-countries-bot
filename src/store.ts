@@ -162,6 +162,11 @@ export class Store {
         created_at TEXT NOT NULL,
         UNIQUE (sub_id, name)
       );
+      CREATE TABLE IF NOT EXISTS ipv6_slot_bindings (
+        sub_id TEXT PRIMARY KEY,
+        slot INTEGER NOT NULL UNIQUE,
+        created_at TEXT NOT NULL
+      );
     `);
     if (version < 2) {
       this.copyLegacyData();
@@ -449,6 +454,23 @@ export class Store {
 
   deleteProxy(id: number): void {
     this.db.query("DELETE FROM proxies WHERE id = ?").run(id);
+  }
+
+  updateProxyOutbound(id: number, outbound: XrayOutbound): void {
+    this.db.query("UPDATE proxies SET outbound_json = ? WHERE id = ?").run(JSON.stringify(outbound), id);
+  }
+
+  /** Subscription → GE IPv6 slot number. Bindings are never released, so a subscription keeps its address. */
+  listIpv6SlotBindings(): Map<string, number> {
+    const rows = this.db.query<{ sub_id: string; slot: number }, []>("SELECT sub_id, slot FROM ipv6_slot_bindings").all();
+    return new Map(rows.map((row) => [row.sub_id, row.slot]));
+  }
+
+  bindIpv6Slot(subId: string, slot: number): void {
+    this.db.query(`
+      INSERT INTO ipv6_slot_bindings (sub_id, slot, created_at) VALUES (?, ?, ?)
+      ON CONFLICT(sub_id) DO UPDATE SET slot = excluded.slot, created_at = excluded.created_at
+    `).run(subId, slot, new Date().toISOString());
   }
 
   listUrnetworkKeys(): Map<string, string> {

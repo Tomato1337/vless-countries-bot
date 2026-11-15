@@ -1,3 +1,5 @@
+import { dirname, join } from "node:path";
+
 export interface AppConfig {
   telegramBotToken: string;
   telegramOwnerId: number;
@@ -7,6 +9,8 @@ export interface AppConfig {
   xuiInboundId: number;
   geOutboundTag: string;
   databasePath: string;
+  /** JSON written by scripts/setup-ge-ipv6-slots.ts; absent file disables per-account IPv6 exits. */
+  geIpv6SlotsPath: string;
   nordVpnPrivateKey?: string;
 }
 
@@ -36,6 +40,7 @@ function outboundTag(value: string): string {
 }
 
 export function loadConfig(env: Record<string, string | undefined> = Bun.env): AppConfig {
+  const databasePath = env.DATABASE_PATH?.trim() || "./data/bot.sqlite";
   return {
     telegramBotToken: required(env, "TELEGRAM_BOT_TOKEN"),
     telegramOwnerId: positiveInteger(required(env, "TELEGRAM_OWNER_ID"), "TELEGRAM_OWNER_ID"),
@@ -44,7 +49,8 @@ export function loadConfig(env: Record<string, string | undefined> = Bun.env): A
     xuiPassword: required(env, "XUI_PASSWORD"),
     xuiInboundId: positiveInteger(required(env, "XUI_INBOUND_ID"), "XUI_INBOUND_ID"),
     geOutboundTag: outboundTag(required(env, "GE_OUTBOUND_TAG")),
-    databasePath: env.DATABASE_PATH?.trim() || "./data/bot.sqlite",
+    databasePath,
+    geIpv6SlotsPath: env.GE_IPV6_SLOTS_PATH?.trim() || join(dirname(databasePath), "ge-ipv6-slots.json"),
     nordVpnPrivateKey: env.NORDVPN_PRIVATE_KEY?.trim() || undefined,
   };
 }

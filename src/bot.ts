@@ -67,7 +67,7 @@ export function createBot(config: BotConfig, store: Store, service: CountryServi
   bot.command("sync", auth(async (ctx) => {
     await ctx.reply("Синхронизирую профили подписок...");
     const result = await service.sync(ctx.from!.id);
-    await ctx.reply(syncSummary(result));
+    await ctx.reply(syncSummary(result, await proxies.syncIpv6Slots(ctx.from!.id)));
   }));
 
   bot.command("remove", auth(async (ctx) => {
@@ -128,7 +128,7 @@ export function createBot(config: BotConfig, store: Store, service: CountryServi
     await answer(ctx);
     await render(ctx, "Синхронизирую профили подписок...");
     const result = await service.sync(ctx.from!.id);
-    await ctx.reply(syncSummary(result));
+    await ctx.reply(syncSummary(result, await proxies.syncIpv6Slots(ctx.from!.id)));
     await showMain(ctx, config);
   }));
   bot.callbackQuery("m:help", auth(async (ctx) => {
@@ -885,6 +885,7 @@ async function showProfileCard(
   const lines = [
     `Профиль ${subscription.slug} (subId ${subscription.subId})`,
     `Ключ URnetwork: ${key ?? "не задан"}`,
+    `IPv6 к ur.io: ${proxies.ipv6Address(subscription.subId) ?? "не выдан"}`,
     `Редакторы: ${admins.length ? admins.join("; ") : "нет"}`,
     "",
     "Прокси:",
@@ -1435,9 +1436,10 @@ function callbackText(ctx: Context, index: number): string {
   return String(ctx.match?.[index] ?? "");
 }
 
-function syncSummary(result: SyncResult): string {
+function syncSummary(result: SyncResult, ipv6Chained: number): string {
   const attached = result.attached.length ? ` Возвращено в inbound: ${result.attached.length}.` : "";
-  return `Готово. Новых профилей: ${result.created.length}. Переименовано: ${result.renamed.length}.${attached}`;
+  const ipv6 = ipv6Chained ? ` Прокси URnetwork через свой IPv6: ${ipv6Chained}.` : "";
+  return `Готово. Новых профилей: ${result.created.length}. Переименовано: ${result.renamed.length}.${attached}${ipv6}`;
 }
 
 function exitSearchText(vpnExit: VpnExit): string {

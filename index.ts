@@ -1,6 +1,7 @@
 import { createBot } from "./src/bot.ts";
 import { loadConfig } from "./src/config.ts";
 import { CountryService } from "./src/country-service.ts";
+import { loadGeIpv6Slots } from "./src/ge-slots.ts";
 import { ProxyService } from "./src/proxy-service.ts";
 import { safeMessage } from "./src/sanitize.ts";
 import { Store } from "./src/store.ts";
@@ -31,9 +32,14 @@ async function main(): Promise<void> {
     if (nordError) {
       console.log(`NordVPN module disabled: ${nordError}`);
     }
+    const geIpv6Slots = await loadGeIpv6Slots(config.geIpv6SlotsPath);
+    console.log(geIpv6Slots
+      ? `GE IPv6 slots: ${geIpv6Slots.length} from ${config.geIpv6SlotsPath}`
+      : `GE IPv6 slots disabled: ${config.geIpv6SlotsPath} not found`);
     const proxies = new ProxyService(store, xui, new HttpUrnetworkClient(), {
       geOutboundTag: config.geOutboundTag,
       inboundId: config.xuiInboundId,
+      geIpv6Slots,
     }, service.mutex);
     const bot = createBot(
       { token: config.telegramBotToken, ownerId: config.telegramOwnerId },

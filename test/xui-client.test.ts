@@ -151,7 +151,7 @@ describe("HttpXuiClient", () => {
       exitSlug: "usa",
       email: "ilya-usa",
       subId: "Ilya",
-      uuid: "74b0b096-5d02-11f1-a319-52cf4084cd34",
+      uuid: "00000000-0000-4000-8000-000000000001",
     };
     await client.createClient(managed, 1);
     expect(await client.listClients()).toContainEqual({ email: "ilya-usa", subId: "Ilya", inboundIds: [1] });
@@ -231,7 +231,7 @@ describe("HttpXuiClient", () => {
       exitSlug: "usa",
       email: "ilya-usa",
       subId: "Ilya",
-      uuid: "74b0b096-5d02-11f1-a319-52cf4084cd34",
+      uuid: "00000000-0000-4000-8000-000000000001",
     };
     await client.createClient(managed, 1);
     await client.renameClient(managed, "🇺🇸-ilya-usa", 1);

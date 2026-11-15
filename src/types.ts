@@ -123,6 +123,15 @@ export interface ProxyRecord {
   createdAt: string;
 }
 
+/** One GE IPv6 slot: the GE inbound client RU authenticates as, and the address GE sends from for it. */
+export interface GeIpv6Slot {
+  slot: number;
+  /** GE client email, also the GE outbound and rule tag: `ipv6-slot-07`. */
+  email: string;
+  uuid: string;
+  address: string;
+}
+
 export interface TelegramUserInfo {
   telegramId: number;
   firstName?: string;

@@ -1,4 +1,5 @@
 import { collectSubscriptions } from "./country-service.ts";
+import { applyRuSlotChains, ruSlotOutboundTag } from "./ge-slots.ts";
 import { Mutex } from "./mutex.ts";
 import {
   assertProxyName,
@@ -16,6 +17,7 @@ import { Store } from "./store.ts";
 import { assertGeOutbound } from "./template.ts";
 import type {
   CustomProxySource,
+  GeIpv6Slot,
   ProxyRecord,
   UrnetworkApi,
   UrnetworkCountry,
@@ -33,6 +35,8 @@ export const URNETWORK_BEST_AVAILABLE_NAME = "Best available";
 export interface ProxyServiceConfig {
   geOutboundTag: string;
   inboundId: number;
+  /** GE IPv6 slots; when set, each subscription's URnetwork proxies reach ur.io from its own GE IPv6 address. */
+  geIpv6Slots?: GeIpv6Slot[];
 }
 
 export interface Subscription {
@@ -156,6 +160,7 @@ export class ProxyService {
       if (!apiKey) {
         throw new Error("нет ключа URnetwork");
       }
+      const slot = this.slotForSubscription(subscription.subId);
       const upstream = await this.urnetwork.createProxy(
         apiKey,
         { location: code, uniqueExit },
@@ -163,12 +168,56 @@ export class ProxyService {
       );
       let outbound: XrayOutbound;
       try {
-        outbound = buildUrnetworkOutbound(outboundTag, upstream, kind, this.config.geOutboundTag);
+        outbound = buildUrnetworkOutbound(
+          outboundTag,
+          upstream,
+          kind,
+          slot ? ruSlotOutboundTag(slot) : this.config.geOutboundTag,
+        );
       } catch (error) {
         await this.removeUpstream(apiKey, upstream);
         throw error;
       }
       return { subscription, apiKey, record: { ...base, provider: "urnetwork", source, upstream, outbound } };
+    });
+  }
+
+  /** GE IPv6 address URnetwork proxies of this subscription use towards ur.io, if one is bound. */
+  ipv6Address(subId: string): string | undefined {
+    const slot = this.store.listIpv6SlotBindings().get(subId);
+    return this.config.geIpv6Slots?.find((item) => item.slot === slot)?.address;
+  }
+
+  /**
+   * Re-chains every URnetwork proxy through its subscription's GE IPv6 slot, binding slots where missing, and
+   * refreshes the slot outbounds from the current GE outbound. Returns the number of URnetwork proxies chained.
+   */
+  async syncIpv6Slots(actorId: number): Promise<number> {
+    if (!this.config.geIpv6Slots) {
+      return 0;
+    }
+    return this.mutex.runExclusive(async () => {
+      const records = this.store.listProxies();
+      const chained = records.filter((proxy) => proxy.provider === "urnetwork");
+      const snapshot = await this.xui.getTemplate();
+      const next = this.withSlotChains(snapshot, records);
+      if (JSON.stringify(next) !== JSON.stringify(snapshot)) {
+        this.store.backupTemplate("proxy-ipv6-sync", snapshot);
+        try {
+          await this.xui.updateTemplate(next);
+        } catch (error) {
+          this.store.audit(actorId, "proxy-ipv6-sync", null, false, safeMessage(error));
+          throw error;
+        }
+      }
+      for (const proxy of chained) {
+        const outbound = next.outbounds.find((item) => item.tag === proxy.outbound.tag);
+        if (outbound) {
+          this.store.updateProxyOutbound(proxy.id, outbound);
+        }
+      }
+      this.store.audit(actorId, "proxy-ipv6-sync", null, true, `chained=${chained.length}`);
+      return chained.length;
     });
   }
 
@@ -203,7 +252,11 @@ export class ProxyService {
         return { removed: 0, upstreamLeftovers: [] };
       }
       const snapshot = await this.xui.getTemplate();
-      const next = removeProxies(snapshot, proxies.map((proxy) => proxy.outbound.tag));
+      const removedIds = new Set(proxies.map((proxy) => proxy.id));
+      const next = this.withSlotChains(
+        removeProxies(snapshot, proxies.map((proxy) => proxy.outbound.tag)),
+        this.store.listProxies().filter((proxy) => !removedIds.has(proxy.id)),
+      );
       const panelEmails = new Set((await this.xui.listClients()).map((client) => client.email.toLowerCase()));
       const deleted: ProxyRecord[] = [];
       let templateApplied = false;
@@ -288,7 +341,10 @@ export class ProxyService {
             { subId: subscription.subId, name, email, uuid: crypto.randomUUID(), createdBy: actorId },
             proxyOutboundTag(subscription.slug, name),
           );
-          const candidate = upsertProxies(snapshot, [{ outbound: draft.record.outbound, email }]);
+          const candidate = this.withSlotChains(
+            upsertProxies(snapshot, [{ outbound: draft.record.outbound, email }]),
+            [...this.store.listProxies(), draft.record],
+          );
           await this.xui.testOutbound(draft.record.outbound, candidate.outbounds);
           drafts.push(draft);
         } catch (error) {
@@ -303,7 +359,10 @@ export class ProxyService {
         return { added: [], failed };
       }
 
-      const next = upsertProxies(snapshot, drafts.map((draft) => ({ outbound: draft.record.outbound, email: draft.record.email })));
+      const next = this.withSlotChains(
+        upsertProxies(snapshot, drafts.map((draft) => ({ outbound: draft.record.outbound, email: draft.record.email }))),
+        [...this.store.listProxies(), ...drafts.map((draft) => draft.record)],
+      );
       this.store.backupTemplate(action, snapshot);
       const added: ProxyRecord[] = [];
       let templateApplied = false;
@@ -339,6 +398,41 @@ export class ProxyService {
       );
       return { added, failed };
     });
+  }
+
+  /** Existing binding, or a random free slot bound now; `undefined` when IPv6 slots are not configured. */
+  private slotForSubscription(subId: string): GeIpv6Slot | undefined {
+    const slots = this.config.geIpv6Slots;
+    if (!slots) {
+      return undefined;
+    }
+    const bindings = this.store.listIpv6SlotBindings();
+    const bound = slots.find((slot) => slot.slot === bindings.get(subId));
+    if (bound) {
+      return bound;
+    }
+    const taken = new Set(bindings.values());
+    const free = slots.filter((slot) => !taken.has(slot.slot));
+    const slot = free[Math.floor(Math.random() * free.length)];
+    if (!slot) {
+      throw new Error(`закончились IPv6-адреса GE для URnetwork (${slots.length})`);
+    }
+    this.store.bindIpv6Slot(subId, slot.slot);
+    return slot;
+  }
+
+  /** Chains the given URnetwork proxies through their subscriptions' slots; other outbounds are left as they are. */
+  private withSlotChains(template: XrayTemplate, records: Array<Pick<ProxyRecord, "subId" | "provider" | "outbound">>): XrayTemplate {
+    if (!this.config.geIpv6Slots) {
+      return template;
+    }
+    const bindings = records
+      .filter((record) => record.provider === "urnetwork")
+      .map((record) => {
+        const slot = this.slotForSubscription(record.subId)!;
+        return { proxyTag: record.outbound.tag, slot };
+      });
+    return applyRuSlotChains(template, this.config.geOutboundTag, bindings);
   }
 
   private async removeUpstream(apiKey: string, upstream: UrnetworkUpstream): Promise<boolean> {

@@ -1,0 +1,17 @@
+[Unit]
+Description=GE IPv6 slot addresses for URnetwork proxies
+After=network-online.target
+Wants=network-online.target
+Before=x-ui.service
+
+[Service]
+Type=oneshot
+# Path to the bot's data/ge-ipv6-slots.json and the uplink interface carrying the /48.
+Environment=SLOTS_FILE=/path/to/vless-countries-bot/data/ge-ipv6-slots.json
+Environment=DEV=eth0
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/ge-ipv6-slots add
+ExecStop=/usr/local/sbin/ge-ipv6-slots del
+
+[Install]
+WantedBy=multi-user.target
