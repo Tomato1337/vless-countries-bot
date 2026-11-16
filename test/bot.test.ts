@@ -157,6 +157,10 @@ describe("Telegram bot UI", () => {
     expect(buttonTexts(calls.at(-1)?.payload)).not.toContain("🔄 Сменить IP");
     await bot.handleUpdate(callbackUpdate(`p:v:${de!.id}`, 8));
     expect(buttonTexts(calls.at(-1)?.payload)).toContain("🔄 Сменить IP");
+    await bot.handleUpdate(callbackUpdate("p:g:ur-nl", 10));
+    expect(buttonTexts(calls.at(-1)?.payload)).not.toContain("🔄 ilya");
+    await bot.handleUpdate(callbackUpdate("p:g:ur-de-uniq", 11));
+    expect(buttonTexts(calls.at(-1)?.payload)).toContain("🔄 ilya");
 
     await bot.handleUpdate(callbackUpdate(`p:ip:${de!.id}`, 9));
     expect(calls.some((call) => String((call.payload as { text?: string }).text).startsWith("IP выхода сменён: Berlin, DE"))).toBe(true);

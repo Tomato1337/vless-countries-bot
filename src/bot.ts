@@ -384,7 +384,12 @@ export function createBot(config: BotConfig, store: Store, service: CountryServi
     await render(ctx, `Меняю IP выхода ${proxy.email}...`);
     const result = await proxies.rotateUniqueExit(ctx.from!.id, proxy.id);
     await ctx.reply(rotateSummary(result));
-    await showProxyCard(ctx, result.proxy);
+    // The owner manages proxies from the group view; others from their own proxy card.
+    if (ctx.from?.id === config.ownerId) {
+      await showProxyGroup(ctx, proxies, result.proxy.name);
+    } else {
+      await showProxyCard(ctx, result.proxy);
+    }
   }));
   bot.callbackQuery(/^p:rm:(\d+)$/, auth(async (ctx) => {
     await answer(ctx);
@@ -972,9 +977,14 @@ async function showProxyGroup(ctx: Context, proxies: ProxyService, name: string)
   if (!members.length) {
     throw new Error(`Прокси не найден: ${name}`);
   }
+  const unique = members[0]!.provider === "urnetwork" && (members[0]!.source as UrnetworkProxySource).uniqueExit === true;
   const keyboard = new InlineKeyboard();
   for (const proxy of members) {
-    keyboard.text(`❌ ${normalizeSubscriptionSlug(proxy.subId)}`, `p:rm:${proxy.id}`).row();
+    const slug = normalizeSubscriptionSlug(proxy.subId);
+    if (unique) {
+      keyboard.text(`🔄 ${slug}`, `p:ip:${proxy.id}`);
+    }
+    keyboard.text(`❌ ${slug}`, `p:rm:${proxy.id}`).row();
   }
   keyboard.text("Удалить у всех", `p:rmg:${name}`).row().text("Назад", "p:home").text("Главное меню", "m:home");
   await render(
@@ -982,8 +992,9 @@ async function showProxyGroup(ctx: Context, proxies: ProxyService, name: string)
     [
       `${proxyFlag(name)} ${name} — ${proxyDescription(members[0]!)}`,
       "",
-      ...members.map((proxy) => `- ${proxy.email}`),
+      ...members.map((proxy) => `- ${proxy.email}${unique && proxy.upstream?.exitLocation ? ` (${proxy.upstream.exitLocation})` : ""}`),
       "",
+      ...(unique ? ["🔄 меняет IP выхода у одного пользователя."] : []),
       "❌ удаляет прокси-профиль у одного пользователя.",
     ].join("\n"),
     keyboard,
