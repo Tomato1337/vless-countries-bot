@@ -5,7 +5,7 @@ import { assertCountrySlug, CountryService, isProtectedExit, normalizeSubscripti
 import type { NordVpnCityOption, SyncResult } from "./country-service.ts";
 import { assertProxyName, buildCustomProxyOutbound, proxyFlag } from "./proxy.ts";
 import { proxyDescription, ProxyService, URNETWORK_BEST_AVAILABLE_NAME } from "./proxy-service.ts";
-import type { ProxyApplyResult, ProxyRemoveResult, Subscription } from "./proxy-service.ts";
+import type { ProxyApplyResult, ProxyRemoveResult, ProxyRotateResult, Subscription } from "./proxy-service.ts";
 import { safeMessage } from "./sanitize.ts";
 import { Store } from "./store.ts";
 import type { NordVpnServer } from "./nordvpn.ts";
@@ -15,6 +15,7 @@ import type {
   ProxyRecord,
   TelegramUserInfo,
   UrnetworkProxyKind,
+  UrnetworkProxySource,
   VpnExit,
 } from "./types.ts";
 import { URNETWORK_BEST_AVAILABLE } from "./types.ts";
@@ -376,6 +377,14 @@ export function createBot(config: BotConfig, store: Store, service: CountryServi
   bot.callbackQuery(/^p:v:(\d+)$/, auth(async (ctx) => {
     await answer(ctx);
     await showProxyCard(ctx, await requireEditableProxy(ctx, config, store, proxies, callbackNumber(ctx, 1)));
+  }));
+  bot.callbackQuery(/^p:ip:(\d+)$/, auth(async (ctx) => {
+    await answer(ctx);
+    const proxy = await requireEditableProxy(ctx, config, store, proxies, callbackNumber(ctx, 1));
+    await render(ctx, `Меняю IP выхода ${proxy.email}...`);
+    const result = await proxies.rotateUniqueExit(ctx.from!.id, proxy.id);
+    await ctx.reply(rotateSummary(result));
+    await showProxyCard(ctx, result.proxy);
   }));
   bot.callbackQuery(/^p:rm:(\d+)$/, auth(async (ctx) => {
     await answer(ctx);
@@ -991,7 +1000,7 @@ async function showProxyCard(ctx: Context, proxy: ProxyRecord): Promise<void> {
       `Источник: ${proxyDescription(proxy)}`,
       `Создан: ${SELECTED_AT_FORMAT.format(new Date(proxy.createdAt))} МСК`,
     ].join("\n"),
-    new InlineKeyboard().text("Удалить", `p:rm:${proxy.id}`).row().text("Назад", "p:home").text("Главное меню", "m:home"),
+    proxyCardKeyboard(proxy),
   );
 }
 
@@ -1245,6 +1254,22 @@ function removeSummary(result: ProxyRemoveResult): string {
     ? `\nНе удалось удалить на ur.io (удалите вручную в ur.io/app/proxies): ${result.upstreamLeftovers.join(", ")}`
     : "";
   return `Удалено прокси-профилей: ${result.removed}.${leftovers}`;
+}
+
+function rotateSummary(result: ProxyRotateResult): string {
+  const next = result.proxy.upstream?.exitLocation ?? "новый выход";
+  const leftover = result.upstreamLeftover
+    ? "\nСтарый прокси не удалился на ur.io (удалите вручную в ur.io/app/proxies)."
+    : "";
+  return `IP выхода сменён: ${result.previousExit ?? "старый выход"} → ${next}. Ссылка подписки не изменилась.${leftover}`;
+}
+
+function proxyCardKeyboard(proxy: ProxyRecord): InlineKeyboard {
+  const keyboard = new InlineKeyboard();
+  if (proxy.provider === "urnetwork" && (proxy.source as UrnetworkProxySource).uniqueExit) {
+    keyboard.text("🔄 Сменить IP", `p:ip:${proxy.id}`);
+  }
+  return keyboard.text("Удалить", `p:rm:${proxy.id}`).row().text("Назад", "p:home").text("Главное меню", "m:home");
 }
 
 function proxiesKeyboard(): InlineKeyboard {

@@ -129,6 +129,46 @@ describe("ProxyService", () => {
     await expect(proxies.setUrnetworkKey(1, ilya, "urn_bad")).rejects.toThrow("HTTP 401");
     expect(store.getUrnetworkKey("Ilya")).toBe("urn_from_one-time-code");
   });
+
+  test("changes the exit IP of a unique-exit proxy without touching its 3x-ui client", async () => {
+    const { store, xui, urnetwork, proxies } = setup();
+    store.setUrnetworkKey("Ilya", "urn_ilya");
+    const ilya = [await proxies.requireSubscription("ilya")];
+    const [proxy] = (await proxies.addUrnetworkProxies(1, ilya, "de", "https", true)).added;
+    const createdClients = xui.created.length;
+
+    const result = await proxies.rotateUniqueExit(1, proxy!.id);
+
+    // The new hosted proxy is created while the old one still exists, so ur.io must pick another unique exit.
+    expect(urnetwork.created.map(({ clientId, uniqueExit, location }) => ({ clientId, uniqueExit, location }))).toEqual([
+      { clientId: "client-1", uniqueExit: true, location: "de" },
+      { clientId: "client-2", uniqueExit: true, location: "de" },
+    ]);
+    expect(urnetwork.removed).toEqual(["client-1"]);
+    expect(result).toMatchObject({ previousExit: "Berlin, DE", upstreamLeftover: false });
+    expect(result.proxy).toMatchObject({ id: proxy!.id, email: proxy!.email, upstream: { clientId: "client-2" } });
+    expect(xui.template.outbounds.filter((item) => item.tag === "proxies-ilya--ur-de-uniq")).toEqual([
+      expect.objectContaining({ settings: { servers: [{ address: "tokenclient2.proxy.ur.test", port: 8443 }] } }),
+    ]);
+    expect(xui.created).toHaveLength(createdClients);
+  });
+
+  test("keeps the old exit when the new one fails its test, and refuses proxies without unique exit", async () => {
+    const { store, xui, urnetwork, proxies } = setup();
+    store.setUrnetworkKey("Ilya", "urn_ilya");
+    const ilya = [await proxies.requireSubscription("ilya")];
+    const [unique] = (await proxies.addUrnetworkProxies(1, ilya, "de", "https", true)).added;
+    const [shared] = (await proxies.addUrnetworkProxies(1, ilya, "nl", "https")).added;
+    const before = structuredClone(xui.template);
+    xui.failTestHostnames.add("tokenclient3");
+
+    await expect(proxies.rotateUniqueExit(1, unique!.id)).rejects.toThrow();
+    await expect(proxies.rotateUniqueExit(1, shared!.id)).rejects.toThrow("unique exit");
+
+    expect(urnetwork.removed).toEqual(["client-3"]);
+    expect(xui.template).toEqual(before);
+    expect(proxies.requireProxy(unique!.id).upstream?.clientId).toBe("client-1");
+  });
 });
 
 describe("proxy naming and URLs", () => {

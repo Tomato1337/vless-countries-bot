@@ -1,4 +1,4 @@
-import { collectSubscriptions } from "./country-service.ts";
+import { collectSubscriptions, normalizeSubscriptionSlug } from "./country-service.ts";
 import { applyRuSlotChains, ruSlotOutboundTag } from "./ge-slots.ts";
 import { Mutex } from "./mutex.ts";
 import {
@@ -53,6 +53,13 @@ export interface ProxyRemoveResult {
   removed: number;
   /** URnetwork proxies the bot could not delete on the account; they keep counting toward its proxy limit. */
   upstreamLeftovers: string[];
+}
+
+export interface ProxyRotateResult {
+  proxy: ProxyRecord;
+  previousExit?: string;
+  /** The old hosted proxy could not be deleted on ur.io; it keeps a slot until ur.io drops it. */
+  upstreamLeftover: boolean;
 }
 
 interface ProxyDraft {
@@ -179,6 +186,72 @@ export class ProxyService {
         throw error;
       }
       return { subscription, apiKey, record: { ...base, provider: "urnetwork", source, upstream, outbound } };
+    });
+  }
+
+  /**
+   * Unique-exit URnetwork proxies only: creates a new hosted proxy while the old one still holds its exit, so ur.io
+   * must assign a different unique exit IP, switches the outbound to it and then deletes the old hosted proxy.
+   * The 3x-ui client, its subscription link and the GE IPv6 slot stay the same.
+   */
+  async rotateUniqueExit(actorId: number, id: number): Promise<ProxyRotateResult> {
+    return this.mutex.runExclusive(async () => {
+      const proxy = this.requireProxy(id);
+      const source = proxy.source as UrnetworkProxySource;
+      if (proxy.provider !== "urnetwork" || !source.uniqueExit || !proxy.upstream) {
+        throw new Error("Сменить IP можно только у прокси URnetwork с unique exit IP");
+      }
+      const apiKey = this.store.getUrnetworkKey(proxy.subId);
+      if (!apiKey) {
+        throw new Error("нет ключа URnetwork");
+      }
+      const snapshot = await this.xui.getTemplate();
+      assertGeOutbound(snapshot, this.config.geOutboundTag);
+      const upstream = await this.urnetwork.createProxy(
+        apiKey,
+        { location: source.countryCode, uniqueExit: true },
+        `vless-countries-bot ${normalizeSubscriptionSlug(proxy.subId)}`,
+      );
+      let templateApplied = false;
+      this.store.backupTemplate("proxy-rotate", snapshot);
+      try {
+        const slot = this.slotForSubscription(proxy.subId);
+        const draft = buildUrnetworkOutbound(
+          proxy.outbound.tag,
+          upstream,
+          source.kind,
+          slot ? ruSlotOutboundTag(slot) : this.config.geOutboundTag,
+        );
+        const next = this.withSlotChains(
+          upsertProxies(snapshot, [{ outbound: draft, email: proxy.email }]),
+          this.store.listProxies().map((item) => item.id === proxy.id ? { ...item, outbound: draft } : item),
+        );
+        const outbound = next.outbounds.find((item) => item.tag === proxy.outbound.tag)!;
+        await this.xui.testOutbound(outbound, next.outbounds);
+        await this.xui.updateTemplate(next);
+        templateApplied = true;
+        this.store.updateProxyUpstream(proxy.id, upstream, outbound);
+      } catch (error) {
+        if (templateApplied) {
+          await this.tryRestoreTemplate(snapshot);
+        }
+        await this.removeUpstream(apiKey, upstream);
+        this.store.audit(actorId, "proxy-rotate", null, false, `${proxy.email}: ${safeMessage(error)}`);
+        throw error;
+      }
+      const upstreamLeftover = !await this.removeUpstream(apiKey, proxy.upstream);
+      this.store.audit(
+        actorId,
+        "proxy-rotate",
+        null,
+        true,
+        `${proxy.email}: ${proxy.upstream.exitLocation ?? "?"} -> ${upstream.exitLocation ?? "?"}`,
+      );
+      return {
+        proxy: this.requireProxy(proxy.id),
+        ...(proxy.upstream.exitLocation ? { previousExit: proxy.upstream.exitLocation } : {}),
+        upstreamLeftover,
+      };
     });
   }
 

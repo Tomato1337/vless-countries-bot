@@ -9,6 +9,7 @@ import type {
   NordVpnSource,
   ProxyRecord,
   TelegramUserInfo,
+  UrnetworkUpstream,
   VpnExit,
   WizardSession,
   XrayOutbound,
@@ -458,6 +459,11 @@ export class Store {
 
   updateProxyOutbound(id: number, outbound: XrayOutbound): void {
     this.db.query("UPDATE proxies SET outbound_json = ? WHERE id = ?").run(JSON.stringify(outbound), id);
+  }
+
+  updateProxyUpstream(id: number, upstream: UrnetworkUpstream, outbound: XrayOutbound): void {
+    this.db.query("UPDATE proxies SET upstream_json = ?, outbound_json = ? WHERE id = ?")
+      .run(JSON.stringify(upstream), JSON.stringify(outbound), id);
   }
 
   /** Subscription → GE IPv6 slot number. Bindings are never released, so a subscription keeps its address. */

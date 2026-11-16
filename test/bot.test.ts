@@ -141,6 +141,28 @@ describe("Telegram bot UI", () => {
     await bot.handleUpdate(callbackUpdate("p:urc:de:1", 4, 2));
     expect(buttonTexts(calls.at(-1)?.payload)).toContain("☑ Unique exit IP (UR Pro)");
   });
+
+  test("offers Change IP only on unique-exit URnetwork proxy cards and rotates the exit", async () => {
+    const { bot, calls, store, xui } = setupBot();
+    store.setUrnetworkKey("Ilya", "urn_ilya");
+    await bot.handleUpdate(callbackUpdate("p:urk:de:https:1"));
+    await bot.handleUpdate(callbackUpdate("p:tt:0:ilya", 2));
+    await bot.handleUpdate(callbackUpdate("p:tok", 3));
+    await bot.handleUpdate(callbackUpdate("p:urk:nl:https:0", 4));
+    await bot.handleUpdate(callbackUpdate("p:tt:0:ilya", 5));
+    await bot.handleUpdate(callbackUpdate("p:tok", 6));
+    const [de, nl] = store.listProxies("Ilya");
+
+    await bot.handleUpdate(callbackUpdate(`p:v:${nl!.id}`, 7));
+    expect(buttonTexts(calls.at(-1)?.payload)).not.toContain("🔄 Сменить IP");
+    await bot.handleUpdate(callbackUpdate(`p:v:${de!.id}`, 8));
+    expect(buttonTexts(calls.at(-1)?.payload)).toContain("🔄 Сменить IP");
+
+    await bot.handleUpdate(callbackUpdate(`p:ip:${de!.id}`, 9));
+    expect(calls.some((call) => String((call.payload as { text?: string }).text).startsWith("IP выхода сменён: Berlin, DE"))).toBe(true);
+    expect(store.getProxy(de!.id)?.upstream?.clientId).toBe("client-3");
+    expect(xui.created.map((client) => client.email)).toEqual(["🇩🇪-ilya-ur-de-uniq-proxy", "🇳🇱-ilya-ur-nl-proxy"]);
+  });
 });
 
 function setupBot() {
