@@ -70,7 +70,8 @@ export class HttpXuiClient implements XuiApi {
     const value = parseMaybeJson(await this.postForm("/panel/api/xray/testOutbounds", {
       outbounds: JSON.stringify([outbound]),
       allOutbounds: JSON.stringify(allOutbounds),
-      mode: "tcp",
+      // TCP mode dials directly from RU and ignores dialerProxy; HTTP mode exercises the full chain.
+      mode: "http",
     }));
     if (!Array.isArray(value) || value.length !== 1) {
       throw new Error("3x-ui /panel/api/xray/testOutbounds returned an unsupported response shape");

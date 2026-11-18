@@ -14,7 +14,7 @@ describe("HttpXuiClient", () => {
     ];
     const clientCalls: string[] = [];
     let updateCalls = 0;
-    let outboundTestResult: unknown = { success: true, delay: 42, mode: "tcp" };
+    let outboundTestResult: unknown = { success: true, delay: 42, mode: "http" };
     const mockFetch = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
         const request = new Request(input, init);
         const url = new URL(request.url);
@@ -50,7 +50,7 @@ describe("HttpXuiClient", () => {
           const form = await request.formData();
           testedOutbound = String(form.get("outbounds"));
           expect(String(form.get("allOutbounds"))).toContain("germany");
-          expect(form.get("mode")).toBe("tcp");
+          expect(form.get("mode")).toBe("http");
           return json({ success: true, obj: [outboundTestResult] });
         }
         if (url.pathname === "/panel/api/inbounds/get/1") {
@@ -132,9 +132,9 @@ describe("HttpXuiClient", () => {
     expect(await client.testOutbound(outbound, [...template.outbounds, outbound])).toEqual({
       success: true,
       delay: 42,
-      mode: "tcp",
+      mode: "http",
     });
-    outboundTestResult = { success: false, error: "probe failed", mode: "tcp" };
+    outboundTestResult = { success: false, error: "probe failed", mode: "http" };
     await expect(client.testOutbound(outbound, [...template.outbounds, outbound])).rejects.toThrow("probe failed");
     outboundTestResult = "42ms";
     await expect(client.testOutbound(outbound, [...template.outbounds, outbound])).rejects.toThrow(
